@@ -1,0 +1,17 @@
+[package]
+name = "flit-core"
+description = "Engine facade for Flit: start, send, receive, events, doctor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+flit-api = { workspace = true }
+flit-client = { workspace = true }
+flit-crypto = { workspace = true }
+flit-discovery = { workspace = true }
+flit-server = { workspace = true }
+flit-storage = { workspace = true }

@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/flit-api",
+    "crates/flit-crypto",
+    "crates/flit-storage",
+    "crates/flit-client",
+    "crates/flit-server",
+    "crates/flit-discovery",
+    "crates/flit-core",
+    "crates/flit-cli",
+    "crates/flit-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Flit contributors"]
+publish = false
+
+[workspace.dependencies]
+flit-api = { path = "crates/flit-api" }
+flit-crypto = { path = "crates/flit-crypto" }
+flit-storage = { path = "crates/flit-storage" }
+flit-client = { path = "crates/flit-client" }
+flit-server = { path = "crates/flit-server" }
+flit-discovery = { path = "crates/flit-discovery" }
+flit-core = { path = "crates/flit-core" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"
