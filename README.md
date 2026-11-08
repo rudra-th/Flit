@@ -3,10 +3,11 @@
 **Files, straight across.** Send a folder from one device to another over your
 own network. No account, no cloud, no configuration.
 
-> **Status: pre-alpha.** The protocol is specified, and identity, path safety and
-> the M1 transport work: a pinned TLS 1.3 connection that sends one file,
-> verifies it end to end, and installs it under a non-colliding name. Discovery,
-> the UIs and the browser page are still ahead. Nothing is usable yet.
+> **Status: pre-alpha.** The protocol is specified, and identity, path safety,
+> the M1 transport and M2 discovery work: a pinned TLS 1.3 connection that sends
+> one file, verifies it end to end, and installs it under a non-colliding name,
+> plus multicast discovery and the subnet-scan fallback for networks that filter
+> it. The UIs and the browser page are still ahead. Nothing is usable yet.
 
 ---
 
@@ -46,9 +47,9 @@ crates/
   flit-api/        wire types: info, manifest, errors, limits
   flit-crypto/     Ed25519 identity, fingerprints, safety badges, key file
   flit-storage/    hostile-path sanitizing, conflict naming
-  flit-discovery/  multicast announce, subnet scan, QR       (M2)
-  flit-client/     dial, pin, streaming send, resume         (M1)
-  flit-server/     TLS listener, sessions, verify, commit    (M1)
+  flit-discovery/  multicast announce, subnet scan, peer table
+  flit-client/     dial, pin, streaming send, resume, probe
+  flit-server/     TLS listener, sessions, verify, commit
   flit-core/       engine facade for every UI
   flit-cli/        headless binary: serve, send, doctor, identity
   flit-bench/      reproducible benchmarks
@@ -69,6 +70,14 @@ cargo run -p flit-cli -- --version
 
 `flit doctor` prints build and protocol facts and runs the self-checks that back
 the safety claims above — no network involved.
+
+CI runs the suite on Linux, Windows and macOS. If a local policy blocks a freshly
+built executable — Windows Smart App Control is one — the same suite runs in a
+container without changing anything else:
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work rust:1.99-bookworm cargo test --workspace
+```
 
 ## Trying the transport
 
@@ -91,6 +100,35 @@ Add `--pin 482913` to `serve` and the same `--pin` to `send` to require a code
 for first contact. Every endpoint except `/info` then needs it, three wrong
 guesses from one address cost a minute, and `/info` still answers so discovery
 can learn that a PIN is wanted.
+
+## Finding devices
+
+`serve` announces the device on the local network, so a peer on the same network
+can list it without knowing an address:
+
+```sh
+# terminal 1 (or another machine)
+cargo run -p flit-cli -- serve --dir ./recv
+
+# terminal 2
+cargo run -p flit-cli -- discover
+cargo run -p flit-cli -- discover --scan          # when multicast is filtered
+cargo run -p flit-cli -- discover --json          # for scripts
+```
+
+`discover` listens for a few seconds and prints each device's address, device
+id, how it was found, and its safety badge; the full fingerprint is printed at
+the end, ready to paste into `send --fingerprint`. It does not announce itself,
+because it has no control port to advertise.
+
+`--scan` adds the fallback: a TLS `/info` probe across this machine's private
+/24s, 32 at a time, 300 ms per host. Public subnets are never scanned, and a scan
+that runs out of its 10 s budget says so instead of reporting an empty network.
+Use `--scan-port` when the receiver is not on the default 47821.
+
+`serve --no-announce` keeps a device off the list entirely — useful when the
+network is shared and being visible is not wanted. A silent device can still
+send, it just cannot be found by discovery.
 
 ## Licence
 

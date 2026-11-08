@@ -9,7 +9,10 @@
 //! fingerprint while presenting a different key still fails the handshake,
 //! because the handshake happens first.
 //!
-//! M1 status: dial, pin, and `GET /api/v1/info`. Uploads land next.
+//! M1 status: dial, pin, upload, resume and verify. [`probe`] is the
+//! discovery entry point added in M2: a first-contact `/info` whose result is
+//! safe to pin, which is what makes a subnet scan possible without weakening
+//! the rule against a dismissible certificate warning.
 
 #![deny(missing_docs)]
 
@@ -117,6 +120,25 @@ pub enum ClientError {
     /// The receiver's hash did not match; nothing was saved.
     #[error("the receiver could not verify the file, so it was not saved")]
     NotVerified,
+    /// A dial did not finish within its deadline.
+    #[error("{addr} did not answer within {}ms", after.as_millis())]
+    Timeout {
+        /// The address that was tried.
+        addr: SocketAddr,
+        /// The deadline it missed.
+        after: Duration,
+    },
+    /// The certificate and `/info` disagree about the peer's identity.
+    ///
+    /// This cannot happen against a correct peer. It is reported separately
+    /// from a pin mismatch because the pin was not the thing that failed.
+    #[error("/info claims {claimed}, but the certificate proves {presented}")]
+    IdentityMismatch {
+        /// Fingerprint of the key in the certificate.
+        presented: String,
+        /// Fingerprint the peer claimed in JSON.
+        claimed: String,
+    },
 }
 
 /// Every request body, boxed so a file stream and a small buffer share a type.
@@ -356,9 +378,9 @@ impl Connection {
         // Pinning already proved the key. This catches a peer that lies in JSON
         // about which key it presented, which is a bug worth reporting loudly.
         if info.fingerprint != self.fingerprint {
-            return Err(ClientError::PinMismatch {
-                expected: self.fingerprint.clone(),
-                presented: info.fingerprint,
+            return Err(ClientError::IdentityMismatch {
+                presented: self.fingerprint.clone(),
+                claimed: info.fingerprint,
             });
         }
         Ok(info)
@@ -385,6 +407,125 @@ impl Drop for Connection {
     fn drop(&mut self) {
         self.driver.abort();
     }
+}
+
+/// A device found by a scan, before anything was known about it.
+///
+/// `fingerprint` is the key the peer proved by completing the TLS handshake,
+/// not the value it claimed in JSON. The two are required to match, so the
+/// value here is safe to pin from now on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    /// Where the peer answered.
+    pub addr: SocketAddr,
+    /// SHA-256 of the key in the peer's certificate.
+    pub fingerprint: String,
+    /// What the peer says about itself, after cross-checking the fingerprint.
+    pub info: Info,
+}
+
+/// Ask a peer at `addr` who it is, without knowing its key in advance.
+///
+/// This is the subnet-scan entry point. It is a *first contact*: the
+/// certificate is not pinned, because pinning is what this call is for. It
+/// still refuses a certificate that is not an Ed25519 identity, and it still
+/// refuses an `/info` body that disagrees with the key it just saw, so a peer
+/// can introduce itself but cannot impersonate another device.
+///
+/// The whole attempt (TCP, TLS and `/info`) is bounded by `timeout`.
+pub async fn probe(addr: SocketAddr, timeout: Duration) -> Result<Probe, ClientError> {
+    match tokio::time::timeout(timeout, probe_inner(addr)).await {
+        Ok(result) => result,
+        Err(_) => Err(ClientError::Timeout {
+            addr,
+            after: timeout,
+        }),
+    }
+}
+
+async fn probe_inner(addr: SocketAddr) -> Result<Probe, ClientError> {
+    let presented = Arc::new(Mutex::new(None));
+    let config = config_with(PinPolicy::Any, Arc::clone(&presented));
+
+    let tcp = TcpStream::connect(addr)
+        .await
+        .map_err(|source| ClientError::Connect { addr, source })?;
+    tcp.set_nodelay(true)
+        .map_err(|source| ClientError::Connect { addr, source })?;
+
+    let connector = TlsConnector::from(config);
+    let tls = connector
+        .connect(ServerName::IpAddress(addr.ip().into()), tcp)
+        .await
+        .map_err(|err| ClientError::Handshake(err.to_string()))?;
+
+    let (mut sender, driver) = http1::handshake(TokioIo::new(tls)).await?;
+    let driver = tokio::spawn(async move {
+        if let Err(err) = driver.await {
+            log::debug!("probe connection closed: {err}");
+        }
+    });
+
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("{API_PREFIX}/info"))
+        .header(header::HOST, host_header(addr))
+        .header(PROTO_HEADER, PROTO_VERSION_STR)
+        .body(bytes_body(Bytes::new()))
+        .map_err(|e| ClientError::Decode(e.to_string()))?;
+
+    let response = match sender.send_request(request).await {
+        Ok(response) => response,
+        Err(err) => {
+            driver.abort();
+            return Err(err.into());
+        }
+    };
+    let status = response.status();
+    let body = match response.into_body().collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(err) => {
+            driver.abort();
+            return Err(err.into());
+        }
+    };
+    driver.abort();
+
+    if status != StatusCode::OK {
+        return Err(ClientError::Status {
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(&body).into_owned(),
+        });
+    }
+
+    let info: Info =
+        serde_json::from_slice(&body).map_err(|e| ClientError::Decode(e.to_string()))?;
+    if info.proto != PROTO_VERSION {
+        return Err(ClientError::Version {
+            theirs: info.proto,
+            ours: PROTO_VERSION,
+        });
+    }
+
+    let fingerprint = presented
+        .lock()
+        .expect("poisoned lock")
+        .clone()
+        .ok_or_else(|| {
+            ClientError::BadCertificate("the handshake finished without a certificate".into())
+        })?;
+    if info.fingerprint != fingerprint {
+        return Err(ClientError::IdentityMismatch {
+            presented: fingerprint,
+            claimed: info.fingerprint,
+        });
+    }
+
+    Ok(Probe {
+        addr,
+        fingerprint,
+        info,
+    })
 }
 
 /// Read `fingerprint` leniently, refusing anything that is not a SHA-256.
@@ -418,20 +559,39 @@ fn verification_algorithms() -> &'static WebPkiSupportedAlgorithms {
         .get_or_init(|| rustls::crypto::ring::default_provider().signature_verification_algorithms)
 }
 
-/// A certificate verifier whose entire policy is "this exact key".
+/// What a connection is willing to accept as the peer's identity.
+enum PinPolicy {
+    /// Exactly one key, as learned from an announce or a QR code.
+    Exact(String),
+    /// Any key that parses as an Ed25519 identity.
+    ///
+    /// This exists only for the scan path, where the point is to *learn* the
+    /// key. It is never used to send anything: [`probe`] reads `/info` and
+    /// returns, and every write path goes through [`Client`].
+    Any,
+}
+
+/// A certificate verifier whose entire policy is "this exact key", or for a
+/// scan, "any key, but tell me which one".
 ///
 /// Chain building, expiry and subject names are deliberately not consulted:
 /// Flit certificates are self-signed and the identity is the key. Checking a
 /// name would add a failure mode without adding a guarantee.
 struct PinnedIdentity {
-    fingerprint: String,
+    policy: PinPolicy,
     presented: Arc<Mutex<Option<String>>>,
 }
 
 impl std::fmt::Debug for PinnedIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PinnedIdentity")
-            .field("fingerprint", &self.fingerprint)
+            .field(
+                "policy",
+                &match &self.policy {
+                    PinPolicy::Exact(fingerprint) => fingerprint.as_str(),
+                    PinPolicy::Any => "any",
+                },
+            )
             .finish_non_exhaustive()
     }
 }
@@ -453,12 +613,14 @@ impl ServerCertVerifier for PinnedIdentity {
         let presented = fingerprint_of(&key);
         *self.presented.lock().expect("poisoned lock") = Some(presented.clone());
 
-        if presented == self.fingerprint {
-            Ok(ServerCertVerified::assertion())
-        } else {
-            Err(RustlsError::InvalidCertificate(
+        match &self.policy {
+            PinPolicy::Any => Ok(ServerCertVerified::assertion()),
+            PinPolicy::Exact(expected) if expected == &presented => {
+                Ok(ServerCertVerified::assertion())
+            }
+            PinPolicy::Exact(_) => Err(RustlsError::InvalidCertificate(
                 rustls::CertificateError::ApplicationVerificationFailure,
-            ))
+            )),
         }
     }
 
@@ -502,16 +664,21 @@ fn pinned_config(
     fingerprint: &str,
     presented: Arc<Mutex<Option<String>>>,
 ) -> Arc<rustls::ClientConfig> {
+    config_with(PinPolicy::Exact(fingerprint.to_string()), presented)
+}
+
+/// Build a TLS 1.3 client config with an explicit pin policy.
+fn config_with(
+    policy: PinPolicy,
+    presented: Arc<Mutex<Option<String>>>,
+) -> Arc<rustls::ClientConfig> {
     let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])
     .expect("the ring provider supports TLS 1.3")
     .dangerous()
-    .with_custom_certificate_verifier(Arc::new(PinnedIdentity {
-        fingerprint: fingerprint.to_string(),
-        presented,
-    }))
+    .with_custom_certificate_verifier(Arc::new(PinnedIdentity { policy, presented }))
     .with_no_client_auth();
     config.alpn_protocols = vec![b"flit/1".to_vec()];
     Arc::new(config)

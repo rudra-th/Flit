@@ -17,6 +17,7 @@ clap = { version = "4", features = ["derive"] }
 flit-api = { workspace = true }
 flit-client = { workspace = true }
 flit-crypto = { workspace = true }
+flit-discovery = { workspace = true }
 flit-server = { workspace = true }
 flit-storage = { workspace = true }
 serde_json = "1"

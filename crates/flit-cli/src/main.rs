@@ -13,12 +13,14 @@
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use clap::{Parser, Subcommand};
+use flit_api::{Announce, DEFAULT_ALIAS, DeviceType, PROTO_VERSION, TLS_PORT};
 use flit_client::{Client, SendOutcome};
 use flit_crypto::{Identity, IdentityFile, StoreError, badge_of};
+use flit_discovery::{Discovery, DiscoveryConfig, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig};
 
 /// Files, straight across.
@@ -40,6 +42,24 @@ enum Command {
     Doctor,
     /// Show this device's identity, fingerprint and safety badge.
     Identity,
+    /// Find nearby devices on this network.
+    Discover {
+        /// How long to listen for multicast announces.
+        #[arg(long, default_value_t = 3)]
+        seconds: u64,
+        /// Also scan this machine's private /24s over TLS.
+        #[arg(long)]
+        scan: bool,
+        /// Print machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+        /// Control port to probe during a scan.
+        #[arg(long, default_value_t = TLS_PORT)]
+        scan_port: u16,
+        /// Discovery port. Only useful when something else owns 47820.
+        #[arg(long, default_value_t = flit_api::DISCOVERY_PORT, hide = true)]
+        discovery_port: u16,
+    },
     /// Receive files until interrupted.
     Serve {
         /// Name shown to other devices.
@@ -57,6 +77,9 @@ enum Command {
         /// Require this PIN from senders. 4-12 digits.
         #[arg(long, value_name = "PIN")]
         pin: Option<String>,
+        /// Do not announce this device on the local network.
+        #[arg(long)]
+        no_announce: bool,
     },
     /// Send one file to a pinned device.
     Send {
@@ -94,13 +117,42 @@ async fn main() {
     let code = match cli.command {
         Some(Command::Doctor) | None => doctor(),
         Some(Command::Identity) => identity(cli.identity.as_deref()),
+        Some(Command::Discover {
+            seconds,
+            scan,
+            json,
+            scan_port,
+            discovery_port,
+        }) => {
+            discover(
+                cli.identity.as_deref(),
+                seconds,
+                scan,
+                json,
+                scan_port,
+                discovery_port,
+            )
+            .await
+        }
         Some(Command::Serve {
             alias,
             bind,
             port,
             dir,
             pin,
-        }) => serve(cli.identity.as_deref(), alias, bind, port, dir, pin).await,
+            no_announce,
+        }) => {
+            serve(
+                cli.identity.as_deref(),
+                alias,
+                bind,
+                port,
+                dir,
+                pin,
+                !no_announce,
+            )
+            .await
+        }
         Some(Command::Info {
             addr,
             fingerprint,
@@ -125,6 +177,13 @@ fn identity_file(path: Option<&Path>) -> Result<IdentityFile, StoreError> {
     }
 }
 
+/// Load the device identity, or explain in one line why it could not be.
+fn load_identity(path: Option<&Path>) -> Result<(Identity, IdentityFile), String> {
+    let store = identity_file(path).map_err(|err| err.to_string())?;
+    let identity = store.load_or_create().map_err(|err| err.to_string())?;
+    Ok((identity, store))
+}
+
 /// Print the identity, fingerprint and badge the way a user would compare them.
 fn print_identity(identity: &Identity, store: &IdentityFile) {
     println!("flit {}", env!("CARGO_PKG_VERSION"));
@@ -140,15 +199,8 @@ fn print_identity(identity: &Identity, store: &IdentityFile) {
 
 /// `flit identity`: show what a peer will pin.
 fn identity(path: Option<&Path>) -> i32 {
-    let store = match identity_file(path) {
-        Ok(store) => store,
-        Err(err) => {
-            eprintln!("flit: {err}");
-            return 1;
-        }
-    };
-    match store.load_or_create() {
-        Ok(identity) => {
+    match load_identity(path) {
+        Ok((identity, store)) => {
             print_identity(&identity, &store);
             0
         }
@@ -156,6 +208,191 @@ fn identity(path: Option<&Path>) -> i32 {
             eprintln!("flit: {err}");
             1
         }
+    }
+}
+
+/// One device, owned so the peer table lock is released before printing.
+struct Discovered {
+    addr: SocketAddr,
+    alias: String,
+    device_id: String,
+    fingerprint: String,
+    source: PeerSource,
+    caps: Vec<String>,
+    pin_required: bool,
+}
+
+/// `flit discover`: list devices on this network.
+///
+/// Listening is the default and scanning is opt-in, because listening costs
+/// nothing and a scan touches 254 hosts. The plan's rule is that the scan is
+/// the fallback, so it is offered on the command line as exactly that.
+async fn discover(
+    path: Option<&Path>,
+    seconds: u64,
+    do_scan: bool,
+    json: bool,
+    scan_port: u16,
+    discovery_port: u16,
+) -> i32 {
+    let (identity, _store) = match load_identity(path) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
+    // Discover-only: the announce is not sent, it only describes who we are to
+    // the peer table and supplies the port a scan should dial.
+    let announce = Announce {
+        proto: PROTO_VERSION,
+        alias: DEFAULT_ALIAS.to_string(),
+        device_id: identity.device_id(),
+        fingerprint: identity.fingerprint(),
+        device_type: DeviceType::Desktop,
+        port: scan_port,
+        caps: Vec::new(),
+        pin_required: false,
+    };
+
+    let config = DiscoveryConfig::default()
+        .with_port(discovery_port)
+        .without_announcing();
+    let discovery = match Discovery::start(announce, config).await {
+        Ok(discovery) => discovery,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
+    if !json {
+        println!("  self          {}", identity.device_id());
+        if do_scan {
+            println!("  listening     udp {discovery_port} for {seconds}s, then scanning");
+        } else {
+            println!("  listening     udp {discovery_port} for {seconds}s");
+        }
+    }
+
+    let listening = tokio::time::sleep(Duration::from_secs(seconds));
+    let scan_report = if do_scan {
+        // The listener runs in its own task, so a scan and the announce feed
+        // fill the same table at the same time.
+        let ((), report) = tokio::join!(listening, discovery.scan());
+        Some(report)
+    } else {
+        listening.await;
+        None
+    };
+
+    let table = discovery.table();
+    let peers: Vec<Discovered> = {
+        let guard = table.read().await;
+        guard
+            .snapshot(Instant::now())
+            .into_iter()
+            .map(|peer| Discovered {
+                addr: peer.addr(),
+                alias: peer.announce().alias.clone(),
+                device_id: peer.announce().device_id.clone(),
+                fingerprint: peer.announce().fingerprint.clone(),
+                source: peer.source(),
+                caps: peer.announce().caps.clone(),
+                pin_required: peer.announce().pin_required,
+            })
+            .collect()
+    };
+
+    if json {
+        let rows: Vec<serde_json::Value> = peers
+            .iter()
+            .map(|peer| {
+                serde_json::json!({
+                    "alias": peer.alias,
+                    "device_id": peer.device_id,
+                    "fingerprint": peer.fingerprint,
+                    "addr": peer.addr.to_string(),
+                    "source": source_name(peer.source),
+                    "caps": peer.caps,
+                    "pin_required": peer.pin_required,
+                })
+            })
+            .collect();
+        match serde_json::to_string_pretty(&rows) {
+            Ok(text) => println!("{text}"),
+            Err(err) => {
+                eprintln!("flit: {err}");
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    if let Some(report) = &scan_report {
+        println!(
+            "  scan          {} targets, {} probed, {} answered",
+            report.targets,
+            report.probed,
+            report.found.len()
+        );
+        if report.incomplete() {
+            println!("                (budget ran out before every host was tried)");
+        }
+    }
+
+    if peers.is_empty() {
+        println!();
+        println!("No devices found.");
+        println!("Run `flit discover --scan` if this network filters multicast.");
+        return 0;
+    }
+
+    println!();
+    for peer in &peers {
+        let badge = badge_of(&peer.fingerprint);
+        let emoji = badge.as_ref().map(|b| b.emoji.as_str()).unwrap_or("----");
+        let words = badge.as_ref().map(|b| b.words.as_str()).unwrap_or("");
+        println!("  {emoji}  {}", peer.alias);
+        println!(
+            "        {}  {}  {}",
+            peer.addr,
+            peer.device_id,
+            source_name(peer.source)
+        );
+        if !peer.caps.is_empty() {
+            println!("        caps: {}", peer.caps.join(", "));
+        }
+        if peer.pin_required {
+            println!("        pin required");
+        }
+        println!("        {words}");
+    }
+    println!();
+    println!(
+        "Pin one with --fingerprint. Full value:\n{}",
+        peers
+            .iter()
+            .map(|peer| format!("  {}  {}", peer.device_id, peer.fingerprint))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    if let Some(report) = scan_report {
+        if report.incomplete() {
+            println!();
+            println!("The scan ran out of time; run it again on a quieter network.");
+        }
+    }
+    0
+}
+
+fn source_name(source: PeerSource) -> &'static str {
+    match source {
+        PeerSource::Multicast => "multicast",
+        PeerSource::Scan => "scan",
+        PeerSource::Manual => "manual",
     }
 }
 
@@ -167,16 +404,10 @@ async fn serve(
     port: u16,
     dir: Option<PathBuf>,
     pin: Option<String>,
+    announce_enabled: bool,
 ) -> i32 {
-    let store = match identity_file(path) {
-        Ok(store) => store,
-        Err(err) => {
-            eprintln!("flit: {err}");
-            return 1;
-        }
-    };
-    let identity = match store.load_or_create() {
-        Ok(identity) => identity,
+    let (identity, store) = match load_identity(path) {
+        Ok(loaded) => loaded,
         Err(err) => {
             eprintln!("flit: {err}");
             return 1;
@@ -202,10 +433,30 @@ async fn serve(
         }
     };
 
+    // Announcing is what makes the device appear without anyone typing an
+    // address. A bind failure here is not fatal: the server still works, the
+    // user just has to reach it by address or QR.
+    let discovery = if announce_enabled {
+        match Discovery::start(announce_for(server.info()), DiscoveryConfig::default()).await {
+            Ok(discovery) => Some(discovery),
+            Err(err) => {
+                eprintln!("flit: discovery unavailable: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     print_identity(&identity, &store);
     println!("  listening     {}", server.local_addr());
     println!("  saving to     {}", server.root().display());
     println!("  protocol      {}", server.info().proto);
+    if discovery.is_some() {
+        println!("  discovering   udp {}", flit_api::DISCOVERY_PORT);
+    } else if announce_enabled {
+        println!("  discovering   disabled");
+    }
     if server.info().pin_required {
         println!("  pin           required for every request except /info");
     }

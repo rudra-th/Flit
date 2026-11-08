@@ -10,3 +10,26 @@ publish.workspace = true
 
 [dependencies]
 flit-api = { workspace = true }
+flit-client = { workspace = true }
+futures-util = "0.3"
+log = "0.4"
+serde_json = "1"
+socket2 = "0.6"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[dev-dependencies]
+flit-crypto = { workspace = true }
+flit-server = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

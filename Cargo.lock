@@ -401,6 +401,7 @@ dependencies = [
  "flit-api",
  "flit-client",
  "flit-crypto",
+ "flit-discovery",
  "flit-server",
  "flit-storage",
  "serde_json",
@@ -460,6 +461,17 @@ name = "flit-discovery"
 version = "0.1.0"
 dependencies = [
  "flit-api",
+ "flit-client",
+ "flit-crypto",
+ "flit-server",
+ "futures-util",
+ "libc",
+ "log",
+ "serde_json",
+ "socket2",
+ "thiserror 2.0.21",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

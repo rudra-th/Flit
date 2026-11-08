@@ -1,6 +1,6 @@
 # Flit protocol, version 1
 
-**Status:** draft, normative for M1
+**Status:** draft, normative for M1 and M2
 **Wire version:** `1`
 **Last updated:** 2026-11-08
 
@@ -74,23 +74,92 @@ Every two seconds, and immediately on start, a node sends a JSON object to
 }
 ```
 
-A peer that receives an announce replies unicast to the source address and port
-with its own announce. There is no distinguishing field: both sides merge by
+A peer that receives an announce replies **unicast** to the source address with
+its own announce. There is no distinguishing field: both sides merge by
 `device_id`, and duplicates are expected and harmless.
 
+Replies are therefore indistinguishable from announces, which creates a loop if
+both sides answer every datagram. The rule that stops it:
+
+> An announce is answered only when the sender has **not** been seen within the
+> last 10 seconds (`REPLY_INTERVAL`). A fresh neighbour is never answered.
+
+Two devices that start together still converge in one round: A announces, B does
+not know A and replies, A does not know B and replies, and now both are fresh and
+stop. A device that later expires is answered again on its next announce, so the
+rule delays rediscovery by at most one announce interval and never suppresses it
+permanently.
+
+A receiver that is in silent mode (it has no control port bound, as with
+`flit discover`) does not announce and does not send replies. It still listens.
+
 The payload is deliberately small. It carries a display name, a device class and
-a public fingerprint — nothing about files, sizes, or history.
+a public fingerprint — nothing about files, sizes, or history. Everything
+received on this port is hostile input, so the receive side applies exactly the
+same validation as the send side:
+
+| Field | Rule |
+|---|---|
+| datagram | at most 1024 bytes, rejected before parsing |
+| `proto` | must equal `1`; a different major version is refused, not half-understood |
+| `fingerprint` | exactly 64 hex characters, normalized to lowercase |
+| `device_id` | must equal `fingerprint[0..16]`; an empty value is filled in, a different one is refused |
+| `port` | non-zero |
+| `alias` | trimmed, 1–64 characters, no control characters |
+| `caps` | at most 16 tokens, each 1–24 characters of `[A-Za-z0-9_-]`, duplicates removed |
+
+A malformed datagram is dropped and logged at debug level. It does not stop the
+listener, and it never reaches the peer table. An announce whose `device_id`
+matches the receiving device is ignored: that is our own datagram looped back.
 
 ### 3.2 Subnet scan
 
 When multicast is blocked — common on guest and corporate networks — a client
-scans its own /24 with `GET /api/v1/info` over TLS, concurrency 32, timeout
-300 ms per host. A host that answers is a device.
+scans for `GET /api/v1/info` over TLS. This is the *primary* fallback precisely
+because it does not rely on multicast working at all.
 
-The scan is the *primary* fallback precisely because it does not rely on
-multicast working at all.
+Targets are chosen conservatively:
 
-### 3.3 QR and manual entry
+- only interfaces with a private address (`10/8`, `172.16/12`, `192.168/16`,
+  `100.64/10`) are used; a public subnet is **never** scanned;
+- each interface contributes the /24 it actually sits in, even if the OS reports
+  a shorter prefix, because 65,534 handshakes is a port scan, not discovery;
+- addresses owned by this machine are skipped, and duplicate subnets are counted
+  once;
+- one scan tries at most 1024 addresses, with 32 dials in flight, 300 ms per
+  host, and a 10 s overall budget. A scan that runs out of budget reports itself
+  as incomplete rather than pretending the network is empty.
+
+Trust on this path is first-use, and it is still not a "continue anyway" button:
+
+1. The TLS certificate must parse as an Ed25519 identity. Nothing else is
+   accepted.
+2. The inspecting build records the key the certificate actually presented.
+3. `/api/v1/info` must report `fingerprint` equal to that key. A peer that
+   claims a different fingerprint is discarded as `identity_mismatch`.
+
+A peer can therefore introduce itself during a scan, but it cannot introduce
+itself *as another device*. The key recorded in step 2 is the value pinned for
+every later send to that device; the scan learns the pin, it never bypasses it.
+
+### 3.3 Peer table
+
+The three discovery sources write into one table keyed by `device_id`:
+
+| Source | Lifetime | Notes |
+|---|---|---|
+| multicast | 6 s after the last announce | three missed announces |
+| scan | 5 min after the response | evidence, not a heartbeat |
+| manual (QR or typed address) | never expires | never moved by an announce, never evicted |
+
+Refreshing a known device keeps its position stable in the UI. The table holds at
+most 256 devices; when it is full, the oldest non-manual entry is evicted, and a
+table full of manual entries rejects newcomers rather than discarding something
+the user confirmed. A second key that claims a known `device_id` is rejected as a
+conflict — the id is derived from the fingerprint, so this is either a collision
+or an attempt to shadow an existing device, and the existing entry wins.
+
+### 3.4 QR and manual entry
 
 For cross-subnet and AP-isolated cases, the receiving device can display a QR
 containing `flit://<ip>:<port>?fp=<fingerprint>&t=<one-time-token>`. The
