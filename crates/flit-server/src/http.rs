@@ -3,11 +3,11 @@
 //! Kept separate from `lib.rs` so the transport setup and the protocol logic can
 //! be read independently.
 
-use std::{convert::Infallible, io::Write, sync::Arc};
+use std::{convert::Infallible, io::Write, net::IpAddr, sync::Arc};
 
 use flit_api::{
-    ApiErrorBody, ErrorCode, FinishRequest, Info, MAX_ITEMS, MAX_MANIFEST_BYTES, ManifestItem,
-    PROTO_HEADER, PROTO_VERSION, PROTO_VERSION_STR,
+    API_PREFIX, ApiErrorBody, ErrorCode, FinishRequest, Info, MAX_ITEMS, MAX_MANIFEST_BYTES,
+    ManifestItem, PIN_HEADER, PROTO_HEADER, PROTO_VERSION, PROTO_VERSION_STR,
 };
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
@@ -17,7 +17,7 @@ use hyper::{
 };
 use sha2::Digest;
 
-use crate::session::Sessions;
+use crate::{pin::PinGuard, session::Sessions};
 
 /// Every response body, boxed so handlers can differ in shape.
 pub type ResponseBody = BoxBody<Bytes, Infallible>;
@@ -28,10 +28,19 @@ pub struct State {
     pub info: Info,
     /// Live sessions and the destination root.
     pub sessions: Sessions,
+    /// PIN policy and recent failures.
+    pub pins: PinGuard,
 }
 
 /// Route one request. Unknown shapes never reach the filesystem.
-pub async fn route(request: Request<Incoming>, state: Arc<State>) -> Response<ResponseBody> {
+///
+/// The peer address is used only for PIN throttling; it never grants access to
+/// anything, because the TLS certificate and the PIN are the whole policy.
+pub async fn route(
+    request: Request<Incoming>,
+    state: Arc<State>,
+    peer: IpAddr,
+) -> Response<ResponseBody> {
     if let Some(version) = request.headers().get(PROTO_HEADER) {
         let version = version.to_str().unwrap_or("<invalid>");
         if version != PROTO_VERSION_STR {
@@ -45,6 +54,20 @@ pub async fn route(request: Request<Incoming>, state: Arc<State>) -> Response<Re
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+    // `/info` is deliberately open: it is what discovery and pinning are built
+    // on, and a peer cannot send a PIN it has not been told about yet. Every
+    // other endpoint, including `DELETE`, needs the PIN when one is configured.
+    let open = method == Method::GET && path == format!("{API_PREFIX}/info");
+    if !open {
+        let presented = request
+            .headers()
+            .get(PIN_HEADER)
+            .and_then(|value| value.to_str().ok());
+        if let Err(code) = state.pins.check(peer, presented) {
+            return error(code, pin_message(code));
+        }
+    }
 
     match (method, segments.as_slice()) {
         (Method::GET, ["api", "v1", "info"]) => json(&state.info),
@@ -215,6 +238,17 @@ async fn cancel(state: &Arc<State>, session_id: &str) -> Response<ResponseBody> 
     match state.sessions.take(session_id).await {
         Some(_) => empty(StatusCode::NO_CONTENT),
         None => error(ErrorCode::NotFound, "no such session"),
+    }
+}
+
+/// The words behind a PIN failure.
+///
+/// "Wrong" and "locked out" share one message on purpose: a distinct message
+/// would tell an attacker how many guesses are left in the window.
+fn pin_message(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::PinRequired => "this device needs a PIN for first contact",
+        _ => "the PIN did not match, or too many attempts were made",
     }
 }
 

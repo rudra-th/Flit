@@ -12,9 +12,11 @@
 #![deny(missing_docs)]
 
 mod http;
+mod pin;
 mod session;
 
 pub use http::{ResponseBody, State};
+pub use pin::{MAX_ATTEMPTS, PinError, PinGuard};
 pub use session::{Commit, Item, Session, Sessions, is_sha256};
 
 use std::{
@@ -60,8 +62,11 @@ pub struct ServerConfig {
     pub root: PathBuf,
     /// Capability tokens this build can actually serve.
     pub caps: Vec<String>,
-    /// Whether a PIN is required for a new peer.
-    pub pin_required: bool,
+    /// PIN required for first contact, if one is configured.
+    ///
+    /// `None` is an open receiver. `pin_required` in `/info` is derived from
+    /// this, so the two can never disagree.
+    pub pin: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -72,7 +77,7 @@ impl Default for ServerConfig {
             bind: SocketAddr::from(([0, 0, 0, 0], TLS_PORT)),
             root: default_receive_dir(),
             caps: implemented_caps(),
-            pin_required: false,
+            pin: None,
         }
     }
 }
@@ -105,6 +110,13 @@ impl ServerConfig {
         self.root = root.into();
         self
     }
+
+    /// Require a PIN for first contact. See [`PinGuard`] for the format rules.
+    #[must_use]
+    pub fn with_pin(mut self, pin: impl Into<String>) -> Self {
+        self.pin = Some(pin.into());
+        self
+    }
 }
 
 /// Things that stop a server from starting.
@@ -134,6 +146,9 @@ pub enum ServerError {
     /// rustls refused the certificate and key.
     #[error("TLS configuration was rejected: {0}")]
     TlsConfig(String),
+    /// The configured PIN is not usable.
+    #[error(transparent)]
+    Pin(#[from] PinError),
     /// A socket operation failed after startup.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -153,6 +168,11 @@ impl Server {
     /// This does not start accepting connections; call [`Server::run`] or
     /// [`Server::run_until`].
     pub async fn bind(identity: &Identity, config: ServerConfig) -> Result<Self, ServerError> {
+        // A PIN is validated before anything is bound or created, so a typo in
+        // the configuration fails at startup instead of silently leaving the
+        // receiver open.
+        let pins = PinGuard::new(config.pin.clone())?;
+
         let listener =
             TcpListener::bind(config.bind)
                 .await
@@ -187,14 +207,18 @@ impl Server {
             port: local_addr.port(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             caps: config.caps,
-            pin_required: config.pin_required,
+            pin_required: pins.required(),
         };
 
         Ok(Self {
             listener,
             acceptor: TlsAcceptor::from(Arc::new(tls_config)),
             local_addr,
-            state: Arc::new(State { info, sessions }),
+            state: Arc::new(State {
+                info,
+                sessions,
+                pins,
+            }),
         })
     }
 
@@ -275,7 +299,7 @@ async fn handle_connection(
 
     let service = service_fn(move |request: Request<Incoming>| {
         let state = Arc::clone(&state);
-        async move { Ok::<_, std::convert::Infallible>(http::route(request, state).await) }
+        async move { Ok::<_, std::convert::Infallible>(http::route(request, state, peer.ip()).await) }
     });
 
     if let Err(err) = hyper::server::conn::http1::Builder::new()

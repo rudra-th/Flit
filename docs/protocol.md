@@ -111,8 +111,9 @@ fingerprint in the QR is authoritative for that session.
 
 ### 4.1 PIN
 
-`pin_required` in the announce tells a peer that a PIN is needed for first
-contact. The PIN is sent as a header on every request:
+`pin_required` in the announce and in `/info` tells a peer that a PIN is needed
+for first contact. A PIN is 4 to 12 ASCII digits. It is sent as a header on every
+request that is not `GET /api/v1/info`:
 
 ```
 X-Flit-Pin: 482913
@@ -122,10 +123,18 @@ Rules:
 
 - The PIN is only ever sent inside TLS. It is never hashed on the wire and never
   stored by the sender.
-- Three attempts per device per 60 seconds, then `403 pin_incorrect` with a
-  cooldown. Attempts are counted per source device id, not per connection.
+- `/info` is exempt. Discovery and pinning happen before a peer can know that a
+  PIN exists, and `pin_required` in that response is how it finds out. Every
+  other endpoint needs the PIN, including `DELETE`.
+- Three failed attempts per source address per 60 seconds, then `403
+  pin_incorrect` for the rest of that window — **including with the correct
+  PIN**, so the limit cannot be guessed through. A missing PIN is not an attempt:
+  nothing was guessed. Counting per device rather than per address needs a
+  proven device identity, which arrives with `POST /api/v1/register`.
 - A wrong PIN and a missing PIN are distinct errors (`pin_incorrect` versus
-  `pin_required`) so the UI can say something true.
+  `pin_required`) so the UI can say something true. "Wrong" and "locked out"
+  deliberately share one message, so the error cannot be used to count attempts.
+- A receiver with no PIN configured ignores the header entirely.
 
 ---
 

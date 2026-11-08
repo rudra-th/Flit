@@ -54,6 +54,9 @@ enum Command {
         /// Directory to save into.
         #[arg(long, value_name = "DIR")]
         dir: Option<PathBuf>,
+        /// Require this PIN from senders. 4-12 digits.
+        #[arg(long, value_name = "PIN")]
+        pin: Option<String>,
     },
     /// Send one file to a pinned device.
     Send {
@@ -96,7 +99,8 @@ async fn main() {
             bind,
             port,
             dir,
-        }) => serve(cli.identity.as_deref(), alias, bind, port, dir).await,
+            pin,
+        }) => serve(cli.identity.as_deref(), alias, bind, port, dir, pin).await,
         Some(Command::Info {
             addr,
             fingerprint,
@@ -162,6 +166,7 @@ async fn serve(
     bind: IpAddr,
     port: u16,
     dir: Option<PathBuf>,
+    pin: Option<String>,
 ) -> i32 {
     let store = match identity_file(path) {
         Ok(store) => store,
@@ -185,6 +190,9 @@ async fn serve(
     if let Some(dir) = dir {
         config = config.with_root(dir);
     }
+    if let Some(pin) = pin {
+        config = config.with_pin(pin);
+    }
 
     let server = match Server::bind(&identity, config).await {
         Ok(server) => server,
@@ -198,6 +206,9 @@ async fn serve(
     println!("  listening     {}", server.local_addr());
     println!("  saving to     {}", server.root().display());
     println!("  protocol      {}", server.info().proto);
+    if server.info().pin_required {
+        println!("  pin           required for every request except /info");
+    }
     println!();
     println!("Waiting for a peer. Press Ctrl-C to stop.");
 

@@ -87,6 +87,11 @@ cargo run -p flit-cli -- send ./some-file.bin \
 A wrong fingerprint fails during the handshake, before any request is sent: that
 is the whole point of pinning the key inside the certificate.
 
+Add `--pin 482913` to `serve` and the same `--pin` to `send` to require a code
+for first contact. Every endpoint except `/info` then needs it, three wrong
+guesses from one address cost a minute, and `/info` still answers so discovery
+can learn that a PIN is wanted.
+
 ## Licence
 
 MIT OR Apache-2.0, at your option.
