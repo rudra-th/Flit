@@ -14,6 +14,10 @@
 //! to compare across two screens; words are what a screen reader can actually
 //! pronounce. The pairing screen shows both and reads the words.
 
+mod tls;
+
+pub use tls::{TlsError, TlsIdentity};
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
@@ -76,6 +80,11 @@ impl Identity {
     #[must_use]
     pub fn public_key(&self) -> [u8; 32] {
         self.verifying_key().to_bytes()
+    }
+
+    /// The signing key, for the TLS module and for PKCS#8 export.
+    pub(crate) fn signing_key(&self) -> &SigningKey {
+        &self.signing
     }
 
     /// The public key as a `VerifyingKey`, for signature checks.

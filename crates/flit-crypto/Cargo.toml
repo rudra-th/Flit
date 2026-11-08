@@ -9,8 +9,14 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-ed25519-dalek = "2"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
 getrandom = { version = "0.2", features = ["std"] }
 hex = "0.4"
+pkcs8 = { version = "0.10", features = ["pem"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+rustls-pki-types = "1"
 sha2 = "0.10"
 thiserror = "2"
+
+[dev-dependencies]
+x509-parser = "0.16"
