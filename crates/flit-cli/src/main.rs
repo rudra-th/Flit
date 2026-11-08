@@ -5,13 +5,30 @@
 //! loudly. It exists from M0 because "device not found" is the most common
 //! support question in this category, and a project with no crash reporting
 //! needs a diagnostic that a user can paste into an issue.
+//!
+//! `flit serve` and `flit info` are the M1 transport test harness: they let two
+//! machines prove, by hand, that the TLS listener works and that a wrong pin is
+//! refused before a byte of file data moves.
+
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use clap::{Parser, Subcommand};
+use flit_client::{Client, SendOutcome};
+use flit_crypto::{Identity, IdentityFile, StoreError, badge_of};
+use flit_server::{Server, ServerConfig};
 
 /// Files, straight across.
 #[derive(Debug, Parser)]
 #[command(name = "flit", version, about = "Files, straight across.", long_about = None)]
 struct Cli {
+    /// Identity file to use instead of the per-user default.
+    #[arg(long, global = true, value_name = "PATH")]
+    identity: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -21,14 +38,278 @@ struct Cli {
 enum Command {
     /// Print build facts and run the built-in self-checks.
     Doctor,
+    /// Show this device's identity, fingerprint and safety badge.
+    Identity,
+    /// Receive files until interrupted.
+    Serve {
+        /// Name shown to other devices.
+        #[arg(long)]
+        alias: Option<String>,
+        /// Address to bind.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: IpAddr,
+        /// Control port. 0 asks the operating system for a free one.
+        #[arg(long, default_value_t = flit_api::TLS_PORT)]
+        port: u16,
+        /// Directory to save into.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
+    /// Send one file to a pinned device.
+    Send {
+        /// File to send.
+        file: PathBuf,
+        /// Peer address, e.g. 192.168.1.20:47821.
+        #[arg(long, value_name = "ADDR")]
+        to: SocketAddr,
+        /// Fingerprint from discovery, a QR code, or `flit identity`.
+        #[arg(long)]
+        fingerprint: String,
+        /// Name to save as, instead of the local file name.
+        #[arg(long)]
+        name: Option<String>,
+        /// PIN for first contact.
+        #[arg(long)]
+        pin: Option<String>,
+    },
+    /// Ask a device who it is, refusing anything but the pinned key.
+    Info {
+        /// Peer address, e.g. 192.168.1.20:47821.
+        addr: SocketAddr,
+        /// Fingerprint from discovery, a QR code, or `flit identity`.
+        #[arg(long)]
+        fingerprint: String,
+        /// PIN for first contact.
+        #[arg(long)]
+        pin: Option<String>,
+    },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
         Some(Command::Doctor) | None => doctor(),
+        Some(Command::Identity) => identity(cli.identity.as_deref()),
+        Some(Command::Serve {
+            alias,
+            bind,
+            port,
+            dir,
+        }) => serve(cli.identity.as_deref(), alias, bind, port, dir).await,
+        Some(Command::Info {
+            addr,
+            fingerprint,
+            pin,
+        }) => info(addr, &fingerprint, pin.as_deref()).await,
+        Some(Command::Send {
+            file,
+            to,
+            fingerprint,
+            name,
+            pin,
+        }) => send(&file, to, &fingerprint, name.as_deref(), pin.as_deref()).await,
     };
     std::process::exit(code);
+}
+
+/// Resolve the identity file, defaulting to the per-user location.
+fn identity_file(path: Option<&Path>) -> Result<IdentityFile, StoreError> {
+    match path {
+        Some(path) => Ok(IdentityFile::new(path)),
+        None => IdentityFile::default_path(),
+    }
+}
+
+/// Print the identity, fingerprint and badge the way a user would compare them.
+fn print_identity(identity: &Identity, store: &IdentityFile) {
+    println!("flit {}", env!("CARGO_PKG_VERSION"));
+    println!("  device        {}", identity.device_id());
+    println!("  fingerprint   {}", identity.fingerprint());
+    println!(
+        "  safety badge  {}  {}",
+        identity.badge_emoji(),
+        identity.badge_words()
+    );
+    println!("  identity file {}", store.path().display());
+}
+
+/// `flit identity`: show what a peer will pin.
+fn identity(path: Option<&Path>) -> i32 {
+    let store = match identity_file(path) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+    match store.load_or_create() {
+        Ok(identity) => {
+            print_identity(&identity, &store);
+            0
+        }
+        Err(err) => {
+            eprintln!("flit: {err}");
+            1
+        }
+    }
+}
+
+/// `flit serve`: receive until Ctrl-C.
+async fn serve(
+    path: Option<&Path>,
+    alias: Option<String>,
+    bind: IpAddr,
+    port: u16,
+    dir: Option<PathBuf>,
+) -> i32 {
+    let store = match identity_file(path) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+    let identity = match store.load_or_create() {
+        Ok(identity) => identity,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
+    let mut config = ServerConfig::default().with_bind(SocketAddr::new(bind, port));
+    if let Some(alias) = alias {
+        config = config.with_alias(alias);
+    }
+    if let Some(dir) = dir {
+        config = config.with_root(dir);
+    }
+
+    let server = match Server::bind(&identity, config).await {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
+    print_identity(&identity, &store);
+    println!("  listening     {}", server.local_addr());
+    println!("  saving to     {}", server.root().display());
+    println!("  protocol      {}", server.info().proto);
+    println!();
+    println!("Waiting for a peer. Press Ctrl-C to stop.");
+
+    let stopped = server
+        .run_until(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+
+    match stopped {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            1
+        }
+    }
+}
+
+/// `flit info`: dial a pinned peer and print what it says about itself.
+async fn info(addr: SocketAddr, fingerprint: &str, pin: Option<&str>) -> i32 {
+    let mut client = match Client::new(addr, fingerprint) {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+    if let Some(pin) = pin {
+        client = client.with_pin(pin);
+    }
+
+    let mut connection = match client.connect().await {
+        Ok(connection) => connection,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
+    let info = match connection.info().await {
+        Ok(info) => info,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+    connection.close();
+
+    match serde_json::to_string_pretty(&info) {
+        Ok(json) => println!("{json}"),
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    }
+
+    if let Some(badge) = badge_of(&info.fingerprint) {
+        let short = info.fingerprint.get(..16).unwrap_or(&info.fingerprint);
+        println!("\n{}  {}", badge.emoji, badge.words);
+        println!("{short}  {}", info.alias);
+    }
+    0
+}
+
+/// `flit send`: send one file to a pinned peer.
+async fn send(
+    file: &Path,
+    addr: SocketAddr,
+    fingerprint: &str,
+    name: Option<&str>,
+    pin: Option<&str>,
+) -> i32 {
+    let mut client = match Client::new(addr, fingerprint) {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+    if let Some(pin) = pin {
+        client = client.with_pin(pin);
+    }
+
+    let mut connection = match client.connect().await {
+        Ok(connection) => connection,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
+    let started = Instant::now();
+    let outcome = connection.send_file(file, name).await;
+    let elapsed = started.elapsed();
+    connection.close();
+
+    match outcome {
+        Ok(SendOutcome::Verified(saved)) => {
+            let seconds = elapsed.as_secs_f64();
+            let mib = saved.bytes as f64 / (1024.0 * 1024.0);
+            println!("sent {} -> {}", file.display(), saved.saved_as);
+            println!(
+                "{mib:.1} MiB in {seconds:.2}s ({:.1} MiB/s), verified",
+                if seconds > 0.0 { mib / seconds } else { 0.0 }
+            );
+            0
+        }
+        Err(err) => {
+            eprintln!("flit: {err}");
+            1
+        }
+    }
 }
 
 /// Print facts, run self-checks, and return a process exit code.
@@ -48,7 +329,7 @@ fn doctor() -> i32 {
     let mut failures = 0;
 
     // Identity: a keypair must produce a stable, well-formed fingerprint.
-    let identity = flit_crypto::Identity::from_secret_bytes([42u8; 32]);
+    let identity = Identity::from_secret_bytes([42u8; 32]);
     failures += report(
         "identity fingerprint",
         identity.fingerprint().len() == 64 && identity.device_id().len() == 16,
@@ -68,6 +349,18 @@ fn doctor() -> i32 {
         "signature round trip",
         signature_ok && tamper_ok,
         "sign, verify, reject tampered message",
+    );
+
+    // The TLS certificate must carry the identity key, or pinning is theatre.
+    let cert_ok = identity
+        .tls_identity(&["localhost".to_string()])
+        .ok()
+        .and_then(|tls| flit_crypto::ed25519_public_key(tls.cert_chain[0].as_ref()).ok())
+        .is_some_and(|key| key == identity.public_key());
+    failures += report(
+        "certificate identity",
+        cert_ok,
+        "certificate key equals the pinned key",
     );
 
     // Path safety: the rules that stop a hostile manifest from escaping.

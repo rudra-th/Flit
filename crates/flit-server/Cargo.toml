@@ -12,3 +12,21 @@ publish.workspace = true
 flit-api = { workspace = true }
 flit-crypto = { workspace = true }
 flit-storage = { workspace = true }
+hex = "0.4"
+getrandom = { version = "0.2", features = ["std"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+log = "0.4"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = "1"
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
+[dev-dependencies]
+flit-client = { workspace = true }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

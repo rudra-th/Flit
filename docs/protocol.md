@@ -135,8 +135,12 @@ Every request carries:
 
 ```
 X-Flit-Proto: 1
-X-Flit-Device: <device_id>
 ```
+
+A sender that has an identity of its own also sends `X-Flit-Device: <device_id>`
+as a display and logging hint. Receivers never require it and never authorize on
+it: in v1 the only identity that is proven is the certificate's, and the client
+side of a transfer has no identity of its own until pairing exists.
 
 Bodies are UTF-8 JSON unless stated otherwise. Responses are UTF-8 JSON.
 
@@ -172,9 +176,18 @@ text is derived from `code`, never from `message`.
 
 ## 6. Endpoints
 
+Endpoints described here but not yet served by a build answer
+`404 not_found` and are absent from that build's `caps`. A peer must treat a
+missing capability as "this feature is unavailable", never as an error. At the
+time of writing, §6.2, §6.5, §6.7 and §6.9 are specified but not implemented.
+
 ### 6.1 `GET /api/v1/info`
 
 Unauthenticated by design: it is what discovery and pinning are built on.
+
+`caps` lists only what the answering build can actually serve. The list below is
+the full v1 vocabulary; a build that has not implemented a feature omits its
+token, and its peers must not attempt that feature.
 
 ```json
 {
@@ -228,6 +241,10 @@ Response `201`:
 Items are validated on declared shape before any file is opened. Limits are in
 §7. A rejection is per item: one bad item does not fail the session.
 
+If **every** item is rejected there is nothing to do, so the receiver answers
+`400 bad_request` and creates no session. A sender that gets this must fix its
+manifest rather than retry the same request.
+
 ### 6.4 `PUT /api/v1/upload/{session}/{item}`
 
 Send one file's bytes. Body is the raw file.
@@ -237,6 +254,9 @@ Send one file's bytes. Body is the raw file.
 - If the receiver already has **more** bytes than the range start, it returns
   `308` with `X-Flit-Offset: <committed>` and an empty body. The client resumes
   from that offset.
+- If the range start is **beyond** what the receiver has, that is a request to
+  skip bytes that were never sent: `409 conflict`, and the sender restarts the
+  item from the receiver's offset.
 - Otherwise the receiver appends, computes SHA-256 on the same pass that writes,
   and returns `204` when the item is fully received.
 
@@ -264,7 +284,10 @@ Verification and commit.
 Request: `{ "item_ids": ["a1", "a2"] }`
 
 For each item the receiver compares the running SHA-256 to the manifest value,
-resolves conflicts (`report (2).pdf`), and atomically renames `.part` into place.
+resolves conflicts (`report (2).pdf`), and installs `.part` under its real name.
+Installation must be atomic and must never overwrite: a receiver that cannot
+link or rename a finished item into place reports `verified: false` rather than
+falling back to a destructive copy.
 
 Response:
 
@@ -279,6 +302,12 @@ Response:
 
 A `verified: false` item is not renamed and is reported to the sender. The
 sender may re-send that item's byte range and finish again.
+
+`finish` is idempotent per item: an item that already verified is not installed
+twice. A session in which some items verified and others did not **stays open**,
+so the sender can repair the rest and call `finish` again; only a session in
+which every requested item verified is closed. A sender that gives up should
+`DELETE` the session (§6.8) instead of leaving it for the receiver's sweep.
 
 ### 6.7 `GET /api/v1/upload/{session}/events`
 

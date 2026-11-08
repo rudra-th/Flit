@@ -20,6 +20,18 @@ use serde::{Deserialize, Serialize};
 /// Major protocol version, advertised in `X-Flit-Proto` and `/api/v1/info`.
 pub const PROTO_VERSION: u16 = 1;
 
+/// [`PROTO_VERSION`] in the form it appears on the wire, for header comparisons.
+pub const PROTO_VERSION_STR: &str = "1";
+
+/// Header carrying the sender's major protocol version.
+pub const PROTO_HEADER: &str = "x-flit-proto";
+
+/// Header carrying the sender's device id.
+pub const DEVICE_HEADER: &str = "x-flit-device";
+
+/// Header carrying a first-contact PIN, always inside TLS.
+pub const PIN_HEADER: &str = "x-flit-pin";
+
 /// Path prefix for every control endpoint.
 pub const API_PREFIX: &str = "/api/v1";
 
@@ -516,6 +528,12 @@ mod tests {
         assert_eq!(info.alias, "Desk");
         assert_eq!(info.device_type, DeviceType::Desktop);
         assert!(!info.pin_required);
+    }
+
+    #[test]
+    fn version_string_matches_the_numeric_version() {
+        assert_eq!(PROTO_VERSION.to_string(), PROTO_VERSION_STR);
+        assert_eq!(PROTO_VERSION_STR, "1");
     }
 
     #[test]

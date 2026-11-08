@@ -31,6 +31,9 @@ pub enum TlsError {
     /// Self-signing failed.
     #[error("could not self-sign the certificate: {0}")]
     Sign(String),
+    /// A certificate could not be parsed, or did not carry an Ed25519 key.
+    #[error("unusable certificate: {0}")]
+    Certificate(String),
 }
 
 /// A certificate chain and private key ready for a TLS server, plus the PEM
@@ -54,6 +57,39 @@ impl std::fmt::Debug for TlsIdentity {
             .field("key", &"<redacted>")
             .finish_non_exhaustive()
     }
+}
+
+/// OID for Ed25519, as dotted decimal.
+const ED25519_OID: &str = "1.3.101.112";
+
+/// Extract the Ed25519 public key from a DER-encoded X.509 certificate.
+///
+/// This is the reader half of the pin check: the connecting side hashes the key
+/// returned here and refuses the connection unless it matches the fingerprint
+/// learned from discovery or a QR code.
+///
+/// Only Ed25519 is accepted. A certificate carrying any other key type is
+/// refused rather than converted, because a peer that is not using the identity
+/// scheme is a peer whose pinning claim cannot be trusted.
+pub fn ed25519_public_key(cert_der: &[u8]) -> Result<[u8; 32], TlsError> {
+    let (rest, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .map_err(|e| TlsError::Certificate(e.to_string()))?;
+    if !rest.is_empty() {
+        return Err(TlsError::Certificate(
+            "trailing bytes after the certificate".into(),
+        ));
+    }
+
+    let spki = cert.public_key();
+    let oid = spki.algorithm.algorithm.to_id_string();
+    if oid != ED25519_OID {
+        return Err(TlsError::Certificate(format!(
+            "expected an Ed25519 key, found OID {oid}"
+        )));
+    }
+
+    <[u8; 32]>::try_from(spki.subject_public_key.data.as_ref())
+        .map_err(|_| TlsError::Certificate("Ed25519 key is not 32 bytes".into()))
 }
 
 impl Identity {
@@ -171,6 +207,36 @@ mod tests {
         assert!(!text.contains("PRIVATE KEY"));
         // The secret scalars themselves must not appear either.
         assert!(!text.contains(&hex::encode(identity.secret_bytes())));
+    }
+
+    #[test]
+    fn the_pin_reader_recovers_the_identity_key() {
+        let identity = Identity::from_secret_bytes([9u8; 32]);
+        let tls = identity.tls_identity(&hosts()).unwrap();
+        let key = ed25519_public_key(tls.cert_chain[0].as_ref()).unwrap();
+        assert_eq!(key, identity.public_key());
+        assert_eq!(
+            crate::fingerprint_of(&key),
+            identity.fingerprint(),
+            "the pin computed from the certificate must equal discovery's"
+        );
+    }
+
+    #[test]
+    fn the_pin_reader_refuses_anything_that_is_not_a_certificate() {
+        assert!(matches!(
+            ed25519_public_key(b"not a certificate"),
+            Err(TlsError::Certificate(_))
+        ));
+        let tls = Identity::from_secret_bytes([4u8; 32])
+            .tls_identity(&hosts())
+            .unwrap();
+        let mut padded = tls.cert_chain[0].as_ref().to_vec();
+        padded.push(0);
+        assert!(matches!(
+            ed25519_public_key(&padded),
+            Err(TlsError::Certificate(_))
+        ));
     }
 
     #[test]

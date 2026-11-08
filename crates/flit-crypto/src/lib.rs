@@ -14,9 +14,11 @@
 //! to compare across two screens; words are what a screen reader can actually
 //! pronounce. The pairing screen shows both and reads the words.
 
+mod store;
 mod tls;
 
-pub use tls::{TlsError, TlsIdentity};
+pub use store::{IdentityFile, StoreError};
+pub use tls::{TlsError, TlsIdentity, ed25519_public_key};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -115,31 +117,21 @@ impl Identity {
     }
 
     /// The four-emoji half of the safety badge.
+    /// The four-emoji half of the safety badge.
     #[must_use]
     pub fn badge_emoji(&self) -> String {
-        let hash = self.fingerprint_bytes();
-        let mut out = String::new();
-        for byte in &hash[0..4] {
-            out.push_str(BADGE_EMOJI[usize::from(*byte) % BADGE_EMOJI.len()]);
-        }
-        out
+        badge_of(&self.fingerprint())
+            .expect("a fingerprint we just produced is always decodable")
+            .emoji
     }
 
     /// The four-word half of the safety badge, for screen readers and for
     /// reading out loud over a phone call.
     #[must_use]
     pub fn badge_words(&self) -> String {
-        let hash = self.fingerprint_bytes();
-        let mut parts = Vec::with_capacity(4);
-        for byte in &hash[4..8] {
-            parts.push(BADGE_WORDS[usize::from(*byte) % BADGE_WORDS.len()]);
-        }
-        parts.join("-")
-    }
-
-    /// Raw fingerprint bytes.
-    fn fingerprint_bytes(&self) -> [u8; 32] {
-        Sha256::digest(self.public_key()).into()
+        badge_of(&self.fingerprint())
+            .expect("a fingerprint we just produced is always decodable")
+            .words
     }
 }
 
@@ -156,6 +148,44 @@ impl std::fmt::Debug for Identity {
 #[must_use]
 pub fn fingerprint_of(public_key: &[u8; 32]) -> String {
     hex::encode(Sha256::digest(public_key))
+}
+
+/// The safety badge: four emoji and four words, both derived from the
+/// fingerprint so two screens showing the same device show the same badge.
+///
+/// The words exist for screen readers and for reading down a phone line. The
+/// emoji exist because comparing four pictures is faster than comparing 64 hex
+/// characters, and speed is what makes people actually check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Badge {
+    /// Four emoji, no separator.
+    pub emoji: String,
+    /// Four hyphen-separated words.
+    pub words: String,
+}
+
+/// Derive the badge from a 64-character fingerprint.
+///
+/// Returns `None` for anything that is not a SHA-256 in hex, so a truncated
+/// value copied out of a log can never produce a plausible-looking badge.
+#[must_use]
+pub fn badge_of(fingerprint: &str) -> Option<Badge> {
+    let bytes = hex::decode(fingerprint.trim()).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+
+    let emoji: String = bytes[0..4]
+        .iter()
+        .map(|b| BADGE_EMOJI[usize::from(*b) % BADGE_EMOJI.len()])
+        .collect();
+    let words = bytes[4..8]
+        .iter()
+        .map(|b| BADGE_WORDS[usize::from(*b) % BADGE_WORDS.len()])
+        .collect::<Vec<_>>()
+        .join("-");
+
+    Some(Badge { emoji, words })
 }
 
 /// Verify a detached signature against a public key.
@@ -234,6 +264,22 @@ mod tests {
         assert_eq!(id.badge_words().split('-').count(), 4);
         assert_eq!(id.badge_emoji(), fixed().badge_emoji());
         assert_eq!(id.badge_words(), fixed().badge_words());
+    }
+
+    #[test]
+    fn a_badge_can_be_derived_from_a_fingerprint_alone() {
+        let id = fixed();
+        let badge = badge_of(&id.fingerprint()).unwrap();
+        assert_eq!(badge.emoji, id.badge_emoji());
+        assert_eq!(badge.words, id.badge_words());
+        assert_eq!(badge.emoji.chars().count(), 4);
+    }
+
+    #[test]
+    fn a_badge_is_refused_for_anything_that_is_not_a_fingerprint() {
+        for bad in ["", "abc", &"a".repeat(63), &format!("{}z", "a".repeat(63))] {
+            assert!(badge_of(bad).is_none(), "{bad:?}");
+        }
     }
 
     #[test]

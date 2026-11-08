@@ -8,8 +8,16 @@ license.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "flit"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 flit-api = { workspace = true }
+flit-client = { workspace = true }
 flit-crypto = { workspace = true }
+flit-server = { workspace = true }
 flit-storage = { workspace = true }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
