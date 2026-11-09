@@ -1,7 +1,9 @@
-//! Sending one file: hash it, prepare a session, stream it, verify it.
+//! Sending files: hash them, prepare a session, stream them, verify them.
 //!
-//! The order matters. The hash is computed before the manifest so the receiver
-//! knows what to verify against before it writes anything, and the file is only
+//! One [`SendTarget`] is a single-file send; several share one session, so the
+//! receiver sees a batch and can accept or refuse items individually. The order
+//! matters. Every hash is computed before the manifest so the receiver knows
+//! what to verify against before it writes anything, and a file is only
 //! announced once its bytes can actually be read.
 //!
 //! Resumption is handled by the same loop as a first attempt: the receiver

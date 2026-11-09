@@ -70,9 +70,13 @@ It also tells us the pipeline is roughly **8× slower than a raw copy on the sam
 disk**, which is the first real performance finding for this project. Two
 candidate causes, neither yet isolated:
 
-1. Received bytes are written with blocking `std::fs` calls inside the async
-   handler, so the TLS read and the disk write never overlap. `tokio::fs` (which
-   hands the write to the blocking pool) is the obvious experiment.
+1. Received bytes were written with blocking `std::fs` calls inside the async
+   handler, so the TLS read and the disk write never overlapped. **Addressed:**
+   the receiver now opens the `.part` file through `tokio::fs` and writes
+   through a 1 MiB `BufWriter`, which moves the blocking work to Tokio's
+   blocking pool and coalesces the small TLS frames into disk-sized writes.
+   The numbers above predate that change; they need re-measuring on the same
+   machine before the gap is called fixed.
 2. The receiver writes into `.part` while Windows Defender has real-time
    scanning enabled, and Smart App Control is on for this machine. Scanning a
    file that grows 1 GiB is a plausible large tax that would not appear on a

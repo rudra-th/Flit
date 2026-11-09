@@ -384,8 +384,12 @@ sender may re-send that item's byte range and finish again.
 `finish` is idempotent per item: an item that already verified is not installed
 twice. A session in which some items verified and others did not **stays open**,
 so the sender can repair the rest and call `finish` again; only a session in
-which every requested item verified is closed. A sender that gives up should
-`DELETE` the session (§6.8) instead of leaving it for the receiver's sweep.
+which every item it holds has been committed is closed. A sender that gives up
+should `DELETE` the session (§6.8) instead of leaving it for the receiver's sweep.
+
+A batch normally uploads every item and then calls `finish` once with all ids.
+Nested names (`photos/day1/a.jpg`) are allowed: the receiver creates the missing
+directories under its root at commit time, after the hash matched.
 
 ### 6.7 `GET /api/v1/upload/{session}/events`
 

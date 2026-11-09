@@ -5,9 +5,10 @@ own network. No account, no cloud, no configuration.
 
 > **Status: pre-alpha.** The protocol is specified, and identity, path safety,
 > the M1 transport and M2 discovery work: a pinned TLS 1.3 connection that sends
-> one file, verifies it end to end, and installs it under a non-colliding name,
-> plus multicast discovery and the subnet-scan fallback for networks that filter
-> it. The UIs and the browser page are still ahead. Nothing is usable yet.
+> a batch of files or a folder in one session, verifies every item end to end,
+> and installs each under a non-colliding name, plus multicast discovery and the
+> subnet-scan fallback for networks that filter it. The UIs and the browser page
+> are still ahead. Nothing is usable yet.
 
 ---
 
@@ -91,7 +92,15 @@ cargo run -p flit-cli -- serve --bind 127.0.0.1 --dir ./recv
 # terminal 2
 cargo run -p flit-cli -- send ./some-file.bin \
     --to 127.0.0.1:47821 --fingerprint <fingerprint from terminal 1>
+
+# several files, or a whole folder, in one session
+cargo run -p flit-cli -- send notes.txt photos/ \
+    --to 127.0.0.1:47821 --fingerprint <fingerprint from terminal 1>
 ```
+
+A folder keeps its own name at the receiver: `send photos/` produces
+`recv/photos/…`, including subdirectories. Each file is hashed before anything
+is announced, and the sender prints one result per file plus a summary.
 
 A wrong fingerprint fails during the handshake, before any request is sent: that
 is the whole point of pinning the key inside the certificate.
