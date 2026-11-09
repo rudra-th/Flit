@@ -18,7 +18,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use flit_api::{Announce, DEFAULT_ALIAS, DeviceType, PROTO_VERSION, TLS_PORT};
-use flit_client::{Client, SendOutcome};
+use flit_client::{Client, SendTarget};
 use flit_crypto::{Identity, IdentityFile, StoreError, badge_of};
 use flit_discovery::{Discovery, DiscoveryConfig, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig};
@@ -83,8 +83,9 @@ enum Command {
     },
     /// Send one file to a pinned device.
     Send {
-        /// File to send.
-        file: PathBuf,
+        /// Files or folders to send.
+        #[arg(required = true, num_args = 1.., value_name = "PATH")]
+        files: Vec<PathBuf>,
         /// Peer address, e.g. 192.168.1.20:47821.
         #[arg(long, value_name = "ADDR")]
         to: SocketAddr,
@@ -159,12 +160,12 @@ async fn main() {
             pin,
         }) => info(addr, &fingerprint, pin.as_deref()).await,
         Some(Command::Send {
-            file,
+            files,
             to,
             fingerprint,
             name,
             pin,
-        }) => send(&file, to, &fingerprint, name.as_deref(), pin.as_deref()).await,
+        }) => send(&files, to, &fingerprint, name.as_deref(), pin.as_deref()).await,
     };
     std::process::exit(code);
 }
@@ -525,13 +526,87 @@ async fn info(addr: SocketAddr, fingerprint: &str, pin: Option<&str>) -> i32 {
 }
 
 /// `flit send`: send one file to a pinned peer.
+/// Expand command-line paths into the files a session will carry.
+///
+/// A directory keeps its own name at the receiver, so `flit send photos`
+/// produces `photos/…` rather than leaking the local absolute path. Symlinks
+/// are skipped: following them can escape the directory the user named and can
+/// loop.
+fn collect_inputs(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<SendTarget>, String> {
+    if name.is_some() && paths.len() > 1 {
+        return Err("--name only applies when sending one file".into());
+    }
+
+    let mut out = Vec::new();
+    for path in paths {
+        let metadata =
+            std::fs::metadata(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        if metadata.is_dir() {
+            if name.is_some() {
+                return Err("--name only applies to a file, not a folder".into());
+            }
+            let base = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("{} has no folder name", path.display()))?
+                .to_string();
+            let root = path.clone();
+            let mut stack = vec![root.clone()];
+            while let Some(dir) = stack.pop() {
+                let entries =
+                    std::fs::read_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+                for entry in entries {
+                    let entry = entry.map_err(|err| format!("{}: {err}", dir.display()))?;
+                    let kind = entry
+                        .file_type()
+                        .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+                    if kind.is_dir() {
+                        stack.push(entry.path());
+                    } else if kind.is_file() {
+                        let full = entry.path();
+                        let relative = full.strip_prefix(&root).unwrap_or(&full);
+                        let remote =
+                            format!("{base}/{}", relative.to_string_lossy().replace('\\', "/"));
+                        out.push(SendTarget {
+                            path: full,
+                            name: Some(remote),
+                        });
+                    }
+                }
+            }
+        } else if metadata.is_file() {
+            out.push(SendTarget {
+                path: path.clone(),
+                name: name.map(str::to_owned),
+            });
+        } else {
+            return Err(format!("{} is not a file or directory", path.display()));
+        }
+    }
+
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    if out.is_empty() {
+        return Err("nothing to send".into());
+    }
+    Ok(out)
+}
+
+/// `flit send`: one session, one or many files.
 async fn send(
-    file: &Path,
+    files: &[PathBuf],
     addr: SocketAddr,
     fingerprint: &str,
     name: Option<&str>,
     pin: Option<&str>,
 ) -> i32 {
+    let targets = match collect_inputs(files, name) {
+        Ok(targets) => targets,
+        Err(err) => {
+            eprintln!("flit: {err}");
+            return 1;
+        }
+    };
+
     let mut client = match Client::new(addr, fingerprint) {
         Ok(client) => client,
         Err(err) => {
@@ -552,26 +627,47 @@ async fn send(
     };
 
     let started = Instant::now();
-    let outcome = connection.send_file(file, name).await;
+    let results = connection.send_files(&targets).await;
     let elapsed = started.elapsed();
     connection.close();
 
-    match outcome {
-        Ok(SendOutcome::Verified(saved)) => {
-            let seconds = elapsed.as_secs_f64();
-            let mib = saved.bytes as f64 / (1024.0 * 1024.0);
-            println!("sent {} -> {}", file.display(), saved.saved_as);
-            println!(
-                "{mib:.1} MiB in {seconds:.2}s ({:.1} MiB/s), verified",
-                if seconds > 0.0 { mib / seconds } else { 0.0 }
-            );
-            0
-        }
+    let outcomes = match results {
+        Ok(outcomes) => outcomes,
         Err(err) => {
             eprintln!("flit: {err}");
-            1
+            return 1;
+        }
+    };
+
+    let mut failures = 0usize;
+    let mut bytes = 0u64;
+    let verbose = outcomes.len() <= 20;
+    for outcome in &outcomes {
+        match &outcome.result {
+            Ok(saved) => {
+                bytes += saved.bytes;
+                if verbose {
+                    println!("sent {} -> {}", outcome.path.display(), saved.saved_as);
+                }
+            }
+            Err(err) => {
+                failures += 1;
+                eprintln!("flit: {}: {err}", outcome.path.display());
+            }
         }
     }
+
+    let seconds = elapsed.as_secs_f64();
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    println!(
+        "{} of {} files, {mib:.1} MiB in {seconds:.2}s ({:.1} MiB/s){}",
+        outcomes.len() - failures,
+        outcomes.len(),
+        if seconds > 0.0 { mib / seconds } else { 0.0 },
+        if failures == 0 { ", verified" } else { "" }
+    );
+
+    if failures == 0 { 0 } else { 1 }
 }
 
 /// Print facts, run self-checks, and return a process exit code.

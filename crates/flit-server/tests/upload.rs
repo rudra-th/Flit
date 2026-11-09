@@ -6,7 +6,7 @@ use std::{
 };
 
 use flit_api::{DeviceType, ErrorCode};
-use flit_client::{Client, ClientError, SendOutcome};
+use flit_client::{Client, ClientError, SendOutcome, SendTarget};
 use flit_crypto::Identity;
 use flit_server::{Server, ServerConfig};
 
@@ -191,6 +191,60 @@ async fn an_empty_file_is_a_file() {
     connection.close();
 
     assert_eq!(std::fs::read(root.join("empty.bin")).unwrap(), b"");
+
+    let _ = stop.send(());
+    handle.await.unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&sender_dir).ok();
+}
+
+#[tokio::test]
+async fn a_batch_arrives_in_one_session_with_nested_names() {
+    let identity = Identity::from_secret_bytes([25u8; 32]);
+    let root = scratch("batch");
+    let sender_dir = scratch("batch-src");
+    let first = sender_dir.join("one.txt");
+    let second = sender_dir.join("two.bin");
+    let third = sender_dir.join("three.txt");
+    std::fs::write(&first, b"first payload").unwrap();
+    std::fs::write(&second, vec![7u8; 300 * 1024]).unwrap();
+    std::fs::write(&third, b"").unwrap();
+
+    let (server, addr) = start(&identity, &root).await;
+    let (stop, handle) = spawn(server);
+
+    let client = Client::new(addr, &identity.fingerprint()).unwrap();
+    let mut connection = client.connect().await.unwrap();
+    let targets = vec![
+        SendTarget { path: first.clone(), name: Some("one.txt".into()) },
+        SendTarget { path: second.clone(), name: Some("folder/two.bin".into()) },
+        SendTarget { path: third.clone(), name: None },
+    ];
+    let outcomes = connection.send_files(&targets).await.expect("send");
+    connection.close();
+
+    assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+    let saved: Vec<String> = outcomes
+        .iter()
+        .map(|outcome| match &outcome.result {
+            Ok(saved) => saved.saved_as.clone(),
+            Err(err) => panic!("{} failed: {err}", outcome.path.display()),
+        })
+        .collect();
+    assert_eq!(saved, vec!["one.txt", "folder/two.bin", "three.txt"]);
+
+    assert_eq!(std::fs::read(root.join("one.txt")).unwrap(), b"first payload");
+    assert_eq!(std::fs::read(root.join("folder/two.bin")).unwrap(), vec![7u8; 300 * 1024]);
+    assert_eq!(std::fs::read(root.join("three.txt")).unwrap(), b"");
+    assert!(
+        !root
+            .join(".flit")
+            .join("parts")
+            .read_dir()
+            .unwrap()
+            .any(|_| true),
+        "the session directory must be gone once the batch is committed"
+    );
 
     let _ = stop.send(());
     handle.await.unwrap();

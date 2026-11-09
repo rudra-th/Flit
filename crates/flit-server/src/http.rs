@@ -3,7 +3,7 @@
 //! Kept separate from `lib.rs` so the transport setup and the protocol logic can
 //! be read independently.
 
-use std::{convert::Infallible, io::Write, net::IpAddr, sync::Arc};
+use std::{convert::Infallible, net::IpAddr, sync::Arc};
 
 use flit_api::{
     API_PREFIX, ApiErrorBody, ErrorCode, FinishRequest, Info, MAX_ITEMS, MAX_MANIFEST_BYTES,
@@ -16,11 +16,19 @@ use hyper::{
     header::{self, HeaderValue},
 };
 use sha2::Digest;
+use tokio::io::{AsyncWriteExt, BufWriter};
 
 use crate::{pin::PinGuard, session::Sessions};
 
 /// Every response body, boxed so handlers can differ in shape.
 pub type ResponseBody = BoxBody<Bytes, Infallible>;
+
+/// How many received bytes are buffered before a part-file write.
+///
+/// Frames arrive at TLS-record size; a megabyte of coalescing turns four
+/// thousand small writes into a few hundred large ones without holding more
+/// than a rounding error of a transfer in memory.
+const WRITE_BUFFER: usize = 1024 * 1024;
 
 /// What a handler needs that is not the request.
 pub struct State {
@@ -140,10 +148,14 @@ async fn upload(
     }
 
     let remaining = item.size - item.received;
-    let mut file = match open_part(item, remaining) {
+    let file = match open_part(item, remaining).await {
         Ok(file) => file,
         Err(err) => return io_error("could not open the part file", err),
     };
+    // Coalesce the small frames TLS hands us into disk-sized writes. The
+    // blocking write itself runs on Tokio's blocking pool, so the reactor keeps
+    // reading the next frame while this one drains.
+    let mut file = BufWriter::with_capacity(WRITE_BUFFER, file);
 
     // The body may be longer than the declared size. Anything past the declared
     // length is refused rather than written, so a lying manifest cannot fill the
@@ -169,7 +181,10 @@ async fn upload(
         let room = remaining - written;
         let take = usize::try_from(room.min(data.len() as u64)).unwrap_or(data.len());
         if take > 0 {
-            if let Err(err) = file.write_all(&data[..take]) {
+            if let Err(err) = file.write_all(&data[..take]).await {
+                // Best-effort flush so the part length matches `received`; if
+                // this fails, the finish-time hash refuses the item anyway.
+                let _ = file.flush().await;
                 return io_error("could not write to disk", err);
             }
             item.hasher.update(&data[..take]);
@@ -182,7 +197,7 @@ async fn upload(
         }
     }
 
-    if let Err(err) = file.flush() {
+    if let Err(err) = file.flush().await {
         return io_error("could not flush to disk", err);
     }
     if too_much {
@@ -216,17 +231,22 @@ async fn finish(
         return error(ErrorCode::NotFound, "no such session");
     };
 
-    let response = {
+    let (response, all_done) = {
         let mut guard = session.lock().await;
         if guard.cancelled {
             return error(ErrorCode::NotFound, "session was cancelled");
         }
-        state.sessions.finish(&mut guard, &request.item_ids)
+        let response = state.sessions.finish(&mut guard, &request.item_ids);
+        // `finish` only reports the ids it was asked about. The session is done
+        // when *every* item it holds is committed, which matters for a
+        // multi-file send finishing items one at a time.
+        let all_done = guard.items.values().all(|item| item.done);
+        (response, all_done)
     };
 
     // A session with anything unverified stays open: the sender may re-send the
     // bytes and finish again. A fully verified session is done.
-    if response.items.iter().all(|item| item.verified) {
+    if all_done {
         state.sessions.take(session_id).await;
     }
 
@@ -315,12 +335,18 @@ async fn read_json<T: serde::de::DeserializeOwned>(body: Incoming) -> Result<T, 
 }
 
 /// Open the part file for appending, creating it when this is a fresh item.
-fn open_part(item: &crate::session::Item, remaining: u64) -> std::io::Result<std::fs::File> {
+async fn open_part(
+    item: &crate::session::Item,
+    remaining: u64,
+) -> std::io::Result<tokio::fs::File> {
     if item.received == 0 {
-        std::fs::File::create(&item.part)
+        tokio::fs::File::create(&item.part).await
     } else {
         debug_assert!(remaining > 0 || item.size == item.received);
-        std::fs::OpenOptions::new().append(true).open(&item.part)
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&item.part)
+            .await
     }
 }
 

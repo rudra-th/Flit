@@ -18,7 +18,7 @@
 
 mod send;
 
-pub use send::{SavedFile, SendOutcome};
+pub use send::{FileOutcome, SavedFile, SendOutcome, SendTarget};
 
 use std::{
     net::SocketAddr,

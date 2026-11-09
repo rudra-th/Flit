@@ -9,11 +9,13 @@
 //! there. A sender that cannot resume reports that instead of corrupting an
 //! item.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use flit_api::{
-    API_PREFIX, ErrorCode, FinishRequest, FinishResponse, ItemKind, ManifestItem, SessionResponse,
+    API_PREFIX, ErrorCode, FinishRequest, FinishResponse, ItemKind, ItemResult, ManifestItem,
+    SessionResponse,
 };
 use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
@@ -46,6 +48,26 @@ pub enum SendOutcome {
     Verified(SavedFile),
 }
 
+/// One local file to send and the name the receiver should see.
+#[derive(Debug, Clone)]
+pub struct SendTarget {
+    /// File to read.
+    pub path: PathBuf,
+    /// Name to offer; `None` uses the local file name.
+    pub name: Option<String>,
+}
+
+/// One file's result inside [`Connection::send_files`].
+#[derive(Debug)]
+pub struct FileOutcome {
+    /// Local path this result belongs to.
+    pub path: PathBuf,
+    /// Name that was offered to the receiver.
+    pub name: String,
+    /// Where it landed and how many bytes arrived, or why this file failed.
+    pub result: Result<SavedFile, ClientError>,
+}
+
 impl Connection {
     /// Send one local file.
     ///
@@ -57,65 +79,164 @@ impl Connection {
         path: impl AsRef<Path>,
         name: Option<&str>,
     ) -> Result<SendOutcome, ClientError> {
-        let path = path.as_ref();
-        let metadata = tokio::fs::metadata(path)
-            .await
-            .map_err(|source| local_error(path, source))?;
-        if !metadata.is_file() {
-            return Err(local_error(
-                path,
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"),
-            ));
-        }
-
-        let size = metadata.len();
-        let remote_name = name
-            .map(str::to_owned)
-            .or_else(|| path.file_name().and_then(|n| n.to_str()).map(str::to_owned))
-            .ok_or_else(|| {
-                local_error(
-                    path,
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "file has no name"),
-                )
-            })?;
-
-        let sha256 = hash_file(path).await?;
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|age| age.as_secs() as i64);
-
-        let item = ManifestItem {
-            id: "i1".to_string(),
-            name: remote_name,
-            size,
-            sha256,
-            mtime,
-            kind: ItemKind::File,
-            text: None,
+        let target = SendTarget {
+            path: path.as_ref().to_path_buf(),
+            name: name.map(str::to_owned),
         };
-
-        let session = self.prepare(&item).await?;
-        let result = match self.upload(&session.session_id, &item, path).await {
-            Ok(()) => self.finish(&session.session_id, &item.id, size).await,
-            Err(err) => Err(err),
-        };
-
-        // A send that gives up must not leave half-written parts on the
-        // receiver for an hour. Cancelling is best effort: the original error
-        // is the one the caller needs to see.
-        if result.is_err() {
-            self.cancel(&session.session_id).await;
-        }
-        result
+        let mut outcomes = self.send_files(std::slice::from_ref(&target)).await?;
+        let outcome = outcomes
+            .pop()
+            .ok_or_else(|| ClientError::Decode("no outcome for a single-file send".into()))?;
+        outcome.result.map(SendOutcome::Verified)
     }
 
-    /// Announce one item and open a session.
-    async fn prepare(&mut self, item: &ManifestItem) -> Result<SessionResponse, ClientError> {
-        let mut manifest = serde_json::to_vec(item)
-            .map_err(|e| ClientError::Decode(format!("could not encode the manifest: {e}")))?;
-        manifest.push(b'\n');
+    /// Send several files in **one session**, hashing them before the manifest
+    /// is announced.
+    ///
+    /// The session is the unit of rejection and cancellation: a receiver can
+    /// accept some items and refuse others, and this method reports each file
+    /// separately. Files that were already verified stay installed even when a
+    /// later item fails, because the receiver links each one into place at
+    /// finish time.
+    ///
+    /// An error here means the session itself could not be created, uploaded
+    /// to, or finished; per-file failures are inside the returned list.
+    pub async fn send_files(
+        &mut self,
+        targets: &[SendTarget],
+    ) -> Result<Vec<FileOutcome>, ClientError> {
+        let mut outcomes: Vec<Option<FileOutcome>> = (0..targets.len()).map(|_| None).collect();
+        let mut prepared: Vec<(usize, ManifestItem)> = Vec::new();
+
+        for (index, target) in targets.iter().enumerate() {
+            match build_item(index, target).await {
+                Ok(item) => prepared.push((index, item)),
+                Err(err) => {
+                    outcomes[index] = Some(FileOutcome {
+                        path: target.path.clone(),
+                        name: offered_name(target),
+                        result: Err(err),
+                    });
+                }
+            }
+        }
+
+        if prepared.is_empty() {
+            return Ok(finish_outcomes(outcomes));
+        }
+
+        let session = {
+            let items: Vec<ManifestItem> = prepared.iter().map(|(_, item)| item.clone()).collect();
+            self.prepare(&items).await?
+        };
+        let accepted: HashSet<&str> = session.accepted.iter().map(String::as_str).collect();
+        if accepted.is_empty() {
+            let reason = session
+                .rejected
+                .first()
+                .map(|rejected| rejected.reason)
+                .unwrap_or(ErrorCode::BadRequest);
+            return Err(ClientError::Rejected(reason));
+        }
+
+        let mut failed = false;
+        for (index, item) in &prepared {
+            if !accepted.contains(item.id.as_str()) {
+                let reason = session
+                    .rejected
+                    .iter()
+                    .find(|rejected| rejected.id == item.id)
+                    .map(|rejected| rejected.reason)
+                    .unwrap_or(ErrorCode::BadRequest);
+                outcomes[*index] = Some(FileOutcome {
+                    path: targets[*index].path.clone(),
+                    name: item.name.clone(),
+                    result: Err(ClientError::Rejected(reason)),
+                });
+                failed = true;
+                continue;
+            }
+            if let Err(err) = self
+                .upload(&session.session_id, item, &targets[*index].path)
+                .await
+            {
+                outcomes[*index] = Some(FileOutcome {
+                    path: targets[*index].path.clone(),
+                    name: item.name.clone(),
+                    result: Err(err),
+                });
+                failed = true;
+            }
+        }
+
+        let ids: Vec<String> = prepared
+            .iter()
+            .filter(|(_, item)| accepted.contains(item.id.as_str()))
+            .map(|(_, item)| item.id.clone())
+            .collect();
+
+        match self.finish(&session.session_id, &ids).await {
+            Ok(results) => {
+                for (index, item) in &prepared {
+                    if outcomes[*index].is_some() {
+                        continue;
+                    }
+                    let Some(result) = results.iter().find(|result| result.id == item.id) else {
+                        outcomes[*index] = Some(FileOutcome {
+                            path: targets[*index].path.clone(),
+                            name: item.name.clone(),
+                            result: Err(ClientError::Decode(
+                                "receiver forgot an item it accepted".into(),
+                            )),
+                        });
+                        failed = true;
+                        continue;
+                    };
+                    if result.verified {
+                        outcomes[*index] = Some(FileOutcome {
+                            path: targets[*index].path.clone(),
+                            name: item.name.clone(),
+                            result: Ok(SavedFile {
+                                saved_as: result
+                                    .saved_as
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                                bytes: item.size,
+                            }),
+                        });
+                    } else {
+                        outcomes[*index] = Some(FileOutcome {
+                            path: targets[*index].path.clone(),
+                            name: item.name.clone(),
+                            result: Err(ClientError::NotVerified),
+                        });
+                        failed = true;
+                    }
+                }
+            }
+            Err(err) => {
+                self.cancel(&session.session_id).await;
+                return Err(err);
+            }
+        }
+
+        // A partially failed session must not leave parts behind. Files that
+        // were already verified are already linked into place and survive.
+        if failed {
+            self.cancel(&session.session_id).await;
+        }
+
+        Ok(finish_outcomes(outcomes))
+    }
+
+    /// Announce a batch of items and open one session.
+    async fn prepare(&mut self, items: &[ManifestItem]) -> Result<SessionResponse, ClientError> {
+        let mut manifest = Vec::new();
+        for item in items {
+            serde_json::to_writer(&mut manifest, item)
+                .map_err(|e| ClientError::Decode(format!("could not encode the manifest: {e}")))?;
+            manifest.push(b'\n');
+        }
 
         let request = self.request(
             Method::POST,
@@ -128,18 +249,8 @@ impl Connection {
             return Err(status_error(status, &body));
         }
 
-        let session: SessionResponse = serde_json::from_slice(&body)
-            .map_err(|e| ClientError::Decode(format!("bad prepare response: {e}")))?;
-        if !session.accepted.iter().any(|id| id == &item.id) {
-            let reason = session
-                .rejected
-                .iter()
-                .find(|rejected| rejected.id == item.id)
-                .map(|rejected| rejected.reason)
-                .unwrap_or(ErrorCode::BadRequest);
-            return Err(ClientError::Rejected(reason));
-        }
-        Ok(session)
+        serde_json::from_slice(&body)
+            .map_err(|e| ClientError::Decode(format!("bad prepare response: {e}")))
     }
 
     /// Stream the bytes, following `308` offsets until the receiver has them all.
@@ -185,15 +296,14 @@ impl Connection {
         )))
     }
 
-    /// Ask the receiver to verify and commit.
+    /// Ask the receiver to verify and commit the named items.
     async fn finish(
         &mut self,
         session_id: &str,
-        item_id: &str,
-        size: u64,
-    ) -> Result<SendOutcome, ClientError> {
+        ids: &[String],
+    ) -> Result<Vec<ItemResult>, ClientError> {
         let body = serde_json::to_vec(&FinishRequest {
-            item_ids: vec![item_id.to_string()],
+            item_ids: ids.to_vec(),
         })
         .map_err(|e| ClientError::Decode(format!("could not encode finish: {e}")))?;
 
@@ -209,22 +319,7 @@ impl Connection {
 
         let response: FinishResponse = serde_json::from_slice(&body)
             .map_err(|e| ClientError::Decode(format!("bad finish response: {e}")))?;
-        let result = response
-            .items
-            .iter()
-            .find(|item| item.id == item_id)
-            .ok_or_else(|| ClientError::Decode("receiver forgot the item".into()))?;
-
-        if !result.verified {
-            return Err(ClientError::NotVerified);
-        }
-        Ok(SendOutcome::Verified(SavedFile {
-            saved_as: result
-                .saved_as
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
-            bytes: size,
-        }))
+        Ok(response.items)
     }
 
     /// Tell the receiver to drop a session we are abandoning.
@@ -249,6 +344,72 @@ impl Connection {
             Err(err) => log::debug!("cancel failed: {err}"),
         }
     }
+}
+
+/// Name offered to the receiver: the override, else the local file name.
+fn offered_name(target: &SendTarget) -> String {
+    target
+        .name
+        .clone()
+        .or_else(|| {
+            target
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| target.path.display().to_string())
+}
+
+/// Hash and describe one file, with its id derived from its place in the batch.
+async fn build_item(index: usize, target: &SendTarget) -> Result<ManifestItem, ClientError> {
+    let path = &target.path;
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|source| local_error(path, source))?;
+    if !metadata.is_file() {
+        return Err(local_error(
+            path,
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"),
+        ));
+    }
+    if offered_name(target).is_empty() {
+        return Err(local_error(
+            path,
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "file has no name"),
+        ));
+    }
+
+    let sha256 = hash_file(path).await?;
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|age| age.as_secs() as i64);
+
+    Ok(ManifestItem {
+        id: format!("i{}", index + 1),
+        name: offered_name(target),
+        size: metadata.len(),
+        sha256,
+        mtime,
+        kind: ItemKind::File,
+        text: None,
+    })
+}
+
+/// Turn the slot vector into the caller-facing order, filling impossible gaps.
+fn finish_outcomes(outcomes: Vec<Option<FileOutcome>>) -> Vec<FileOutcome> {
+    outcomes
+        .into_iter()
+        .map(|outcome| {
+            outcome.unwrap_or_else(|| FileOutcome {
+                path: PathBuf::new(),
+                name: String::new(),
+                result: Err(ClientError::Decode("no result was recorded".into())),
+            })
+        })
+        .collect()
 }
 
 /// SHA-256 of a file, streamed so a 4 GiB file does not need 4 GiB of memory.

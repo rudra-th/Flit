@@ -249,6 +249,13 @@ impl Session {
             .and_then(|n| n.to_str())
             .ok_or_else(|| std::io::Error::other("item has no usable file name"))?;
 
+        // A folder send offers nested names such as `photos/day1/a.jpg`.
+        // Create the directories it needs, but only inside the root: the path
+        // was already sanitized and joined when the item was accepted.
+        if parent != self.root {
+            fs::create_dir_all(parent)?;
+        }
+
         for attempt in 1..=attempts {
             let candidate = if attempt == 1 {
                 item.target.clone()
