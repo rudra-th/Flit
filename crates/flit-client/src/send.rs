@@ -387,12 +387,12 @@ impl Connection {
                     ),
                 ));
             }
-            let header = PackHeader {
-                id: &item.id,
-                name: &item.name,
-                size: item.size,
-                sha256: &item.sha256,
-            };
+            let header = serde_json::json!({
+                "id": &item.id,
+                "name": &item.name,
+                "size": item.size,
+                "sha256": &item.sha256,
+            });
             let header = serde_json::to_vec(&header)
                 .map_err(|e| ClientError::Decode(format!("could not encode a pack header: {e}")))?;
             if header.len() > u32::MAX as usize {
@@ -464,15 +464,6 @@ impl Connection {
             Err(err) => log::debug!("cancel failed: {err}"),
         }
     }
-}
-
-/// One pack entry header, as defined in `docs/protocol.md` §6.5.
-#[derive(serde::Serialize)]
-struct PackHeader<'a> {
-    id: &'a str,
-    name: &'a str,
-    size: u64,
-    sha256: &'a str,
 }
 
 /// Name offered to the receiver: the override, else the local file name.
