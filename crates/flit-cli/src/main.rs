@@ -538,6 +538,7 @@ fn collect_inputs(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<SendTarge
     }
 
     let mut out = Vec::new();
+    let mut skipped = 0usize;
     for path in paths {
         let metadata =
             std::fs::metadata(path).map_err(|err| format!("{}: {err}", path.display()))?;
@@ -571,6 +572,10 @@ fn collect_inputs(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<SendTarge
                             path: full,
                             name: Some(remote),
                         });
+                    } else {
+                        // Symlinks, sockets and devices are not followed: a
+                        // link can point outside the folder or loop forever.
+                        skipped += 1;
                     }
                 }
             }
@@ -585,6 +590,9 @@ fn collect_inputs(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<SendTarge
     }
 
     out.sort_by(|a, b| a.path.cmp(&b.path));
+    if skipped > 0 {
+        eprintln!("flit: skipped {skipped} non-regular file(s) in the folder walk");
+    }
     if out.is_empty() {
         return Err("nothing to send".into());
     }
