@@ -83,6 +83,9 @@ pub async fn route(
         (Method::PUT, ["api", "v1", "upload", session, item]) => {
             upload(request, &state, session, item).await
         }
+        (Method::POST, ["api", "v1", "upload", session, "pack"]) => {
+            pack(request, &state, session).await
+        }
         (Method::POST, ["api", "v1", "upload", session, "finish"]) => {
             finish(request, &state, session).await
         }
@@ -214,6 +217,194 @@ async fn upload(
     }
 
     empty(StatusCode::NO_CONTENT)
+}
+
+/// Largest pack header accepted, in bytes. A header is a small JSON object;
+/// the cap keeps a corrupt length from turning into a huge allocation.
+const MAX_PACK_HEADER: usize = 16 * 1024;
+
+/// One pack entry header, as defined in `docs/protocol.md` §6.5.
+#[derive(serde::Deserialize)]
+struct PackHeader {
+    id: String,
+    name: String,
+    size: u64,
+    sha256: String,
+}
+
+/// `POST /api/v1/upload/{session}/pack`: many small files in one body.
+///
+/// Each entry is `u32 length | JSON header | payload`. The header must agree
+/// with the manifest; the payload is written and hashed exactly like a `PUT`,
+/// but without a request per file. A pack that fails part-way leaves finished
+/// items complete; the sender can retry them with `PUT` or another pack.
+async fn pack(
+    request: Request<Incoming>,
+    state: &Arc<State>,
+    session_id: &str,
+) -> Response<ResponseBody> {
+    let Some(session) = state.sessions.get(session_id).await else {
+        return error(ErrorCode::NotFound, "no such session");
+    };
+    let mut session = session.lock().await;
+    if session.cancelled {
+        return error(ErrorCode::NotFound, "session was cancelled");
+    }
+
+    let mut reader = PackReader::new(request.into_body());
+    let mut entries = 0usize;
+
+    loop {
+        if reader.available() == 0 && !reader.more().await {
+            if reader.failed {
+                return error(ErrorCode::BadRequest, "pack body ended unexpectedly");
+            }
+            break;
+        }
+        let Some(raw) = reader.read_exact(4).await else {
+            return error(ErrorCode::BadRequest, "pack body ended inside a length");
+        };
+        let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        if length == 0 {
+            return error(ErrorCode::BadRequest, "pack header length must not be zero");
+        }
+        if length > MAX_PACK_HEADER {
+            return error(ErrorCode::BadRequest, "pack header is too large");
+        }
+        let Some(raw) = reader.read_exact(length).await else {
+            return error(ErrorCode::BadRequest, "pack body ended inside a header");
+        };
+        let header: PackHeader = match serde_json::from_slice(&raw) {
+            Ok(header) => header,
+            Err(_) => return error(ErrorCode::BadRequest, "pack header must be JSON"),
+        };
+
+        let Some(item) = session.items.get_mut(&header.id) else {
+            return error(ErrorCode::NotFound, format!("no such item: {}", header.id));
+        };
+        if item.done {
+            return error(
+                ErrorCode::Conflict,
+                format!("item {} is already committed", header.id),
+            );
+        }
+        if header.size != item.size
+            || header.name != item.name
+            || header.sha256.to_ascii_lowercase() != item.sha256
+        {
+            return error(
+                ErrorCode::Conflict,
+                format!("pack header for {} does not match the manifest", header.id),
+            );
+        }
+        if item.size > flit_api::PACK_THRESHOLD {
+            return error(
+                ErrorCode::BadRequest,
+                format!(
+                    "item {} is larger than the {} byte pack limit",
+                    header.id,
+                    flit_api::PACK_THRESHOLD
+                ),
+            );
+        }
+        // A previous attempt may have left a partial part file. Pack entries
+        // always carry the whole item, so starting over is safe and keeps a
+        // retry from being refused for a half-written predecessor.
+        if item.received > 0 {
+            if let Err(err) = item.reset() {
+                return io_error("could not reset the part file", err);
+            }
+        }
+
+        let Some(payload) = reader.read_exact(item.size as usize).await else {
+            return error(
+                ErrorCode::BadRequest,
+                format!("pack body ended inside item {}", header.id),
+            );
+        };
+        let mut file = match tokio::fs::File::create(&item.part).await {
+            Ok(file) => file,
+            Err(err) => return io_error("could not create the part file", err),
+        };
+        if let Err(err) = file.write_all(&payload).await {
+            return io_error("could not write to disk", err);
+        }
+        if let Err(err) = file.flush().await {
+            return io_error("could not flush to disk", err);
+        }
+        item.hasher.update(&payload);
+        item.received = item.size;
+        entries += 1;
+    }
+
+    if entries == 0 {
+        return error(ErrorCode::BadRequest, "pack contained no items");
+    }
+    empty(StatusCode::NO_CONTENT)
+}
+
+/// Reads exact byte runs out of a request body without buffering the whole
+/// pack: frames are appended to a small buffer and consumed from its front.
+struct PackReader {
+    body: Incoming,
+    buffer: Vec<u8>,
+    start: usize,
+    failed: bool,
+}
+
+impl PackReader {
+    fn new(body: Incoming) -> Self {
+        Self {
+            body,
+            buffer: Vec::new(),
+            start: 0,
+            failed: false,
+        }
+    }
+
+    fn available(&self) -> usize {
+        self.buffer.len() - self.start
+    }
+
+    /// Pull one more frame into the buffer. `false` means the body is done.
+    async fn more(&mut self) -> bool {
+        while let Some(frame) = self.body.frame().await {
+            match frame {
+                Ok(frame) => {
+                    let Ok(data) = frame.into_data() else {
+                        continue;
+                    };
+                    if data.is_empty() {
+                        continue;
+                    }
+                    self.buffer.extend_from_slice(&data);
+                    return true;
+                }
+                Err(err) => {
+                    log::debug!("pack body ended early: {err}");
+                    self.failed = true;
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    async fn read_exact(&mut self, count: usize) -> Option<Bytes> {
+        while self.available() < count {
+            if !self.more().await {
+                return None;
+            }
+        }
+        let end = self.start + count;
+        let out = Bytes::copy_from_slice(&self.buffer[self.start..end]);
+        self.start = end;
+        if self.start >= 256 * 1024 {
+            self.buffer.drain(..self.start);
+            self.start = 0;
+        }
+        Some(out)
+    }
 }
 
 /// `POST /api/v1/upload/{session}/finish`: verify, resolve collisions, commit.

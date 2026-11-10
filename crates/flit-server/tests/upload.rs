@@ -251,3 +251,56 @@ async fn a_batch_arrives_in_one_session_with_nested_names() {
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&sender_dir).ok();
 }
+
+#[tokio::test]
+async fn many_small_files_ride_pack_requests() {
+    let identity = Identity::from_secret_bytes([26u8; 32]);
+    let root = scratch("pack");
+    let sender_dir = scratch("pack-src");
+
+    let mut targets = Vec::new();
+    for index in 0u32..200 {
+        let path = sender_dir.join(format!("file-{index:03}.txt"));
+        let payload = vec![b'a' + (index % 26) as u8; (index as usize * 37) % 4096];
+        std::fs::write(&path, &payload).unwrap();
+        targets.push(SendTarget {
+            path,
+            name: Some(format!("bundle/file-{index:03}.txt")),
+        });
+    }
+
+    let (server, addr) = start(&identity, &root).await;
+    let (stop, handle) = spawn(server);
+
+    let client = Client::new(addr, &identity.fingerprint()).unwrap();
+    let mut connection = client.connect().await.unwrap();
+    let outcomes = connection.send_files(&targets).await.expect("send");
+    connection.close();
+
+    assert_eq!(outcomes.len(), 200);
+    for (index, outcome) in outcomes.iter().enumerate() {
+        match &outcome.result {
+            Ok(saved) => assert_eq!(saved.saved_as, format!("bundle/file-{index:03}.txt")),
+            Err(err) => panic!("file {index} failed: {err}"),
+        }
+    }
+    assert!(std::fs::read(root.join("bundle/file-000.txt")).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(root.join("bundle/file-199.txt")).unwrap().len(),
+        (199 * 37) % 4096
+    );
+    assert!(
+        !root
+            .join(".flit")
+            .join("parts")
+            .read_dir()
+            .unwrap()
+            .any(|_| true),
+        "packed items must not leave parts behind"
+    );
+
+    let _ = stop.send(());
+    handle.await.unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&sender_dir).ok();
+}

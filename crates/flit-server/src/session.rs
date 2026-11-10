@@ -65,8 +65,11 @@ impl Item {
         self.received == self.size
     }
 
-    /// Forget everything received, so the sender can start over.
-    fn reset(&mut self) -> std::io::Result<()> {
+    /// Drop the partial bytes and start this item over.
+    ///
+    /// Used when a hash did not match and when a pack entry replaces a partial
+    /// upload; the sender always resends from zero in both cases.
+    pub(crate) fn reset(&mut self) -> std::io::Result<()> {
         match fs::remove_file(&self.part) {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {}

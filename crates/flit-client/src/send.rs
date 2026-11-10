@@ -17,7 +17,7 @@ use std::time::UNIX_EPOCH;
 
 use flit_api::{
     API_PREFIX, ErrorCode, FinishRequest, FinishResponse, ItemKind, ItemResult, ManifestItem,
-    SessionResponse,
+    PACK_THRESHOLD, SessionResponse,
 };
 use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
@@ -32,6 +32,12 @@ use crate::{ClientError, Connection, RequestBody, bytes_body};
 
 /// How many times a `308` resume may bounce before giving up.
 const MAX_RESUME_ATTEMPTS: usize = 4;
+
+/// Payload bytes per pack request.
+///
+/// Bounds what one batch holds in memory while still turning hundreds of small
+/// files into one request instead of hundreds.
+const PACK_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Where a file ended up, as the receiver recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +148,56 @@ impl Connection {
         }
 
         let mut failed = false;
+
+        // Small files travel in pack requests: one round trip for a group of
+        // them instead of one per file. A pack carries each item whole, so a
+        // failed pack falls back to `PUT` and the normal resume path decides
+        // whether the receiver already has the bytes.
+        let packable: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, item))| {
+                accepted.contains(item.id.as_str()) && item.size <= PACK_THRESHOLD
+            })
+            .map(|(position, _)| position)
+            .collect();
+
+        let mut start = 0;
+        while start < packable.len() {
+            let mut end = start;
+            let mut bytes = 0u64;
+            while end < packable.len() {
+                let size = prepared[packable[end]].1.size;
+                if end > start && bytes + size > PACK_REQUEST_BYTES {
+                    break;
+                }
+                bytes += size;
+                end += 1;
+            }
+
+            if self
+                .pack_upload(&session.session_id, &prepared, &packable[start..end], targets)
+                .await
+                .is_err()
+            {
+                for &position in &packable[start..end] {
+                    let (index, item) = &prepared[position];
+                    if let Err(err) = self
+                        .upload(&session.session_id, item, &targets[*index].path)
+                        .await
+                    {
+                        outcomes[*index] = Some(FileOutcome {
+                            path: targets[*index].path.clone(),
+                            name: item.name.clone(),
+                            result: Err(err),
+                        });
+                        failed = true;
+                    }
+                }
+            }
+            start = end;
+        }
+
         for (index, item) in &prepared {
             if !accepted.contains(item.id.as_str()) {
                 let reason = session
@@ -156,6 +212,11 @@ impl Connection {
                     result: Err(ClientError::Rejected(reason)),
                 });
                 failed = true;
+                continue;
+            }
+            if item.size <= PACK_THRESHOLD {
+                // Already sent in a pack request, or its fallback failed and
+                // recorded an outcome above.
                 continue;
             }
             if let Err(err) = self
@@ -298,6 +359,63 @@ impl Connection {
         )))
     }
 
+    /// Send a group of small files in one `pack` request.
+    ///
+    /// The body is `u32 length | JSON header | payload` per item, exactly as
+    /// §6.5 defines it. Callers treat any error as "fall back to `PUT`", so the
+    /// reason is not inspected here.
+    async fn pack_upload(
+        &mut self,
+        session_id: &str,
+        prepared: &[(usize, ManifestItem)],
+        positions: &[usize],
+        targets: &[SendTarget],
+    ) -> Result<(), ClientError> {
+        let mut body = Vec::new();
+        for &position in positions {
+            let (index, item) = &prepared[position];
+            let path = &targets[*index].path;
+            let bytes = tokio::fs::read(path)
+                .await
+                .map_err(|source| local_error(path, source))?;
+            if bytes.len() as u64 != item.size {
+                return Err(local_error(
+                    path,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "file changed size while sending",
+                    ),
+                ));
+            }
+            let header = PackHeader {
+                id: &item.id,
+                name: &item.name,
+                size: item.size,
+                sha256: &item.sha256,
+            };
+            let header = serde_json::to_vec(&header)
+                .map_err(|e| ClientError::Decode(format!("could not encode a pack header: {e}")))?;
+            if header.len() > u32::MAX as usize {
+                return Err(ClientError::Decode("pack header is too large".into()));
+            }
+            body.extend_from_slice(&(header.len() as u32).to_le_bytes());
+            body.extend_from_slice(&header);
+            body.extend_from_slice(&bytes);
+        }
+
+        let request = self.request(
+            Method::POST,
+            format!("{API_PREFIX}/upload/{session_id}/pack"),
+            bytes_body(Bytes::from(body)),
+        )?;
+        let timeout = self.transfer_timeout;
+        let (status, _, response) = self.execute_within(request, timeout).await?;
+        if status != StatusCode::NO_CONTENT {
+            return Err(status_error(status, &response));
+        }
+        Ok(())
+    }
+
     /// Ask the receiver to verify and commit the named items.
     async fn finish(
         &mut self,
@@ -346,6 +464,15 @@ impl Connection {
             Err(err) => log::debug!("cancel failed: {err}"),
         }
     }
+}
+
+/// One pack entry header, as defined in `docs/protocol.md` §6.5.
+#[derive(serde::Serialize)]
+struct PackHeader<'a> {
+    id: &'a str,
+    name: &'a str,
+    size: u64,
+    sha256: &'a str,
 }
 
 /// Name offered to the receiver: the override, else the local file name.

@@ -355,6 +355,17 @@ repeat
 Every item in a pack must be at most 256 KiB as declared in the manifest. A
 4-byte header length of `0` is invalid and ends the pack with `bad_request`.
 
+Each header is checked against the manifest: `id`, `name`, `size` and `sha256`
+must match, the item must still be open, and the declared size must be at or
+below `PACK_THRESHOLD`. A mismatch or an already-committed item is
+`409 conflict`, an unknown id is `404 not_found`, and an oversized item is
+`400 bad_request`. A successful pack answers `204` with no body.
+
+A pack commits nothing; the sender still calls `finish` (§6.6). One session may
+use several pack requests, and a pack may be retried after a failure: an entry
+replaces any partial bytes for that item, because it always carries the whole
+payload. Items fully written by a request that ended early stay complete.
+
 ### 6.6 `POST /api/v1/upload/{session}/finish`
 
 Verification and commit.
