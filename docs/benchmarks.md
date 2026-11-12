@@ -144,3 +144,46 @@ without touching the transfer path.
 The run also found that `finish` bodies were capped at 64 KiB, which 10,000 ids
 exceed. `finish` now has its own 8 MiB cap (`MAX_FINISH_BYTES`).
 
+---
+
+## M3: 100 GiB soak, loopback
+
+**Date:** 2026-11-12
+**Build:** release (`cargo build --release -p flit-bench`), `flit-bench 0.1.0`
+**Machine:** Windows 11 host, release binary inside `rust:1.99-bookworm`
+(Docker Desktop, WSL2), 3 GB RAM, container overlay volume
+**Link:** loopback (`127.0.0.1`), server and client in one process
+
+### Procedure
+
+```sh
+flit-bench --only single --large-bytes 107374182400
+```
+
+One 100 GiB file, streamed and verified in a single `PUT`. This is the M3 gate
+that answers the only question a per-file benchmark cannot: does anything grow
+with the number of bytes?
+
+### Results
+
+| Scenario | Files | Bytes | Time | Rate | Peak RSS |
+|---|---|---|---|---|---|
+| `single-file-put` | 1 | 100 GiB | 980.1 s | 104.5 MiB/s | 15.6 MiB |
+
+`peak RSS` is `VmHWM` for the whole process, and the process is receiver, sender
+and harness at once, so it is an upper bound on what either side needs.
+
+### What it shows
+
+- **Memory is flat.** 15.6 MiB for 100 GiB, after 16 minutes of streaming, means
+  no buffer, hash state or part list grows with transfer size: the file is
+  hashed incrementally, written through a fixed-size buffer and never held.
+- **Throughput at scale is better than the 256 MiB row above** (104.5 vs
+  44 MiB/s). The short run is dominated by fixed costs and cold filesystem
+  metadata; the soak measures the steady state. Both are real numbers for
+  different questions, and the smaller one is what a user experiences for a
+  single photo.
+- **A 100 GiB transfer completes with a hash that verifies**, so the existing
+  `u64` offsets and session bookkeeping do not overflow or drift at that size.
+
+

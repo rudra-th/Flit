@@ -274,7 +274,33 @@ async fn main() {
         );
     }
 
+    match peak_rss_mib() {
+        Some(mib) => println!("\npeak RSS: {mib:.1} MiB"),
+        None => println!("\npeak RSS: unavailable on this platform"),
+    }
+
     fixture.shutdown().await;
+}
+
+/// Peak resident set size of this process, in MiB.
+///
+/// A soak is only meaningful if memory stays flat, so the number that matters
+/// is the high-water mark, not the current size at the end. Linux exposes it
+/// directly; other platforms report nothing rather than a guess.
+#[cfg(target_os = "linux")]
+fn peak_rss_mib() -> Option<f64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status
+        .lines()
+        .find(|line| line.starts_with("VmHWM:"))?
+        .strip_prefix("VmHWM:")?;
+    let kib: f64 = line.trim().trim_end_matches(" kB").trim().parse().ok()?;
+    Some(kib / 1024.0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peak_rss_mib() -> Option<f64> {
+    None
 }
 
 fn parse<T: std::str::FromStr>(args: &mut impl Iterator<Item = String>, flag: &str) -> T {

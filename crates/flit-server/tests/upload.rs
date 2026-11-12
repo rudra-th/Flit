@@ -441,6 +441,18 @@ impl RawClient {
         response.session_id
     }
 
+    /// Abandon a session. The receiver must drop its partial bytes.
+    async fn delete(&mut self, session_id: &str) -> StatusCode {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("{API_PREFIX}/upload/{session_id}"))
+            .header(header::HOST, "flit.test")
+            .header(PROTO_HEADER, PROTO_VERSION_STR)
+            .body(Full::new(Bytes::new()))
+            .expect("delete request");
+        self.call(request).await.0
+    }
+
     /// Send bytes for one item, optionally declaring where they start.
     async fn put(
         &mut self,
@@ -524,4 +536,47 @@ async fn an_interrupted_send_resumes_in_the_same_session() {
     handle.await.unwrap();
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&sender_dir).ok();
+}
+
+/// Cancelling a session must remove its partial bytes and forget it. A
+/// cancelled session is not a resume candidate either.
+#[tokio::test]
+async fn cancelling_a_session_drops_its_partial_bytes() {
+    let identity = Identity::from_secret_bytes([28u8; 32]);
+    let root = scratch("cancel");
+
+    let (server, addr) = start(&identity, &root).await;
+    let (stop, handle) = spawn(server);
+
+    let payload = vec![3u8; 8 * 1024];
+    let digest = hex::encode(Sha256::digest(&payload));
+    let manifest = format!(
+        "{{\"id\":\"i1\",\"name\":\"x.bin\",\"size\":{},\"sha256\":\"{digest}\",\"kind\":\"file\"}}\n",
+        payload.len()
+    );
+
+    let mut raw = RawClient::connect(addr).await;
+    let session_id = raw.prepare(&manifest).await;
+    let (status, _) = raw.put(&session_id, "i1", &payload[..1024], None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let dir = root.join(".flit").join("parts").join(&session_id);
+    assert!(dir.join("0.part").exists());
+
+    assert_eq!(raw.delete(&session_id).await, StatusCode::NO_CONTENT);
+    assert!(!dir.exists(), "cancelling removes the partial bytes");
+    assert!(!root.join("x.bin").exists());
+
+    // Forgotten, not merely marked: the id is gone and a second cancel 404s.
+    let (status, _) = raw.put(&session_id, "i1", &payload[..1024], Some(0)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(raw.delete(&session_id).await, StatusCode::NOT_FOUND);
+
+    // The same manifest after a cancel starts a new session rather than
+    // adopting the dead one.
+    assert_ne!(raw.prepare(&manifest).await, session_id);
+
+    let _ = stop.send(());
+    handle.await.unwrap();
+    std::fs::remove_dir_all(&root).ok();
 }
