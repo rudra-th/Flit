@@ -6,8 +6,8 @@
 use std::{convert::Infallible, net::IpAddr, sync::Arc};
 
 use flit_api::{
-    API_PREFIX, ApiErrorBody, ErrorCode, FinishRequest, Info, MAX_ITEMS, MAX_MANIFEST_BYTES,
-    ManifestItem, PIN_HEADER, PROTO_HEADER, PROTO_VERSION, PROTO_VERSION_STR,
+    API_PREFIX, ApiErrorBody, ErrorCode, FinishRequest, Info, MAX_FINISH_BYTES, MAX_ITEMS,
+    MAX_MANIFEST_BYTES, ManifestItem, PIN_HEADER, PROTO_HEADER, PROTO_VERSION, PROTO_VERSION_STR,
 };
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
@@ -413,7 +413,7 @@ async fn finish(
     state: &Arc<State>,
     session_id: &str,
 ) -> Response<ResponseBody> {
-    let request: FinishRequest = match read_json(request.into_body()).await {
+    let request: FinishRequest = match read_json(request.into_body(), MAX_FINISH_BYTES).await {
         Ok(body) => body,
         Err(code) => return error(code, "finish body must be JSON"),
     };
@@ -511,15 +511,17 @@ fn push_line(line: &[u8], items: &mut Vec<ManifestItem>) -> Result<(), ErrorCode
 
 /// Read a small JSON body. Finish requests are tiny, so the cap is generous but
 /// not unbounded.
-async fn read_json<T: serde::de::DeserializeOwned>(body: Incoming) -> Result<T, ErrorCode> {
-    const MAX_BODY: usize = 64 * 1024;
-
+/// Read and decode a JSON body, refusing anything longer than `limit` bytes.
+async fn read_json<T: serde::de::DeserializeOwned>(
+    body: Incoming,
+    limit: usize,
+) -> Result<T, ErrorCode> {
     let bytes = body
         .collect()
         .await
         .map_err(|_| ErrorCode::BadRequest)?
         .to_bytes();
-    if bytes.len() > MAX_BODY {
+    if bytes.len() > limit {
         return Err(ErrorCode::TooLarge);
     }
     serde_json::from_slice(&bytes).map_err(|_| ErrorCode::BadRequest)

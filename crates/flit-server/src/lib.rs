@@ -43,6 +43,7 @@ use tokio_rustls::TlsAcceptor;
 pub fn implemented_caps() -> Vec<String> {
     vec![
         caps::RESUME.to_string(),
+        caps::PACK.to_string(),
         caps::VERIFY.to_string(),
         caps::TEXT.to_string(),
     ]
@@ -372,9 +373,9 @@ mod tests {
     }
 
     #[test]
-    fn we_do_not_advertise_what_we_cannot_serve() {
+    fn we_advertise_what_we_can_serve_and_nothing_else() {
         let caps = implemented_caps();
-        assert!(!caps.contains(&caps::PACK.to_string()));
+        assert!(caps.contains(&caps::PACK.to_string()));
         assert!(!caps.contains(&caps::PROGRESS_SSE.to_string()));
     }
 

@@ -59,6 +59,13 @@ pub const MAX_ITEMS: usize = 100_000;
 /// Upper bound on the streamed manifest body, in bytes.
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
+/// Upper bound on a `finish` body, in bytes.
+///
+/// One body can name every item in a session: 100,000 ids at their longest
+/// allowed shape are a few mebibytes of JSON, so the 64 KiB control-plane cap
+/// would turn a large batch into a mysterious `413`.
+pub const MAX_FINISH_BYTES: usize = 8 * 1024 * 1024;
+
 /// Upper bound on a single declared item size (1 TiB).
 pub const MAX_FILE_BYTES: u64 = 1 << 40;
 

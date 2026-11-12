@@ -437,6 +437,7 @@ Enforced before any I/O:
 |---|---|---|
 | Items per session | 100,000 | `MAX_ITEMS` |
 | Manifest body | 64 MiB | `MAX_MANIFEST_BYTES` |
+| Finish body | 8 MiB | `MAX_FINISH_BYTES` |
 | Single item | 1 TiB | `MAX_FILE_BYTES` |
 | Session total | 8 TiB | `MAX_TOTAL_BYTES` |
 | Pack item | 256 KiB | `PACK_THRESHOLD` |

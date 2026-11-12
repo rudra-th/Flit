@@ -176,7 +176,12 @@ impl Connection {
             }
 
             if self
-                .pack_upload(&session.session_id, &prepared, &packable[start..end], targets)
+                .pack_upload(
+                    &session.session_id,
+                    &prepared,
+                    &packable[start..end],
+                    targets,
+                )
                 .await
                 .is_err()
             {
@@ -240,11 +245,17 @@ impl Connection {
 
         match self.finish(&session.session_id, &ids).await {
             Ok(results) => {
+                // One lookup per item, not one scan per item: a 10,000 file
+                // batch would otherwise compare every result with every item.
+                let by_id: std::collections::HashMap<&str, &ItemResult> = results
+                    .iter()
+                    .map(|result| (result.id.as_str(), result))
+                    .collect();
                 for (index, item) in &prepared {
                     if outcomes[*index].is_some() {
                         continue;
                     }
-                    let Some(result) = results.iter().find(|result| result.id == item.id) else {
+                    let Some(result) = by_id.get(item.id.as_str()).copied() else {
                         outcomes[*index] = Some(FileOutcome {
                             path: targets[*index].path.clone(),
                             name: item.name.clone(),

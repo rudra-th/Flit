@@ -216,9 +216,18 @@ async fn a_batch_arrives_in_one_session_with_nested_names() {
     let client = Client::new(addr, &identity.fingerprint()).unwrap();
     let mut connection = client.connect().await.unwrap();
     let targets = vec![
-        SendTarget { path: first.clone(), name: Some("one.txt".into()) },
-        SendTarget { path: second.clone(), name: Some("folder/two.bin".into()) },
-        SendTarget { path: third.clone(), name: None },
+        SendTarget {
+            path: first.clone(),
+            name: Some("one.txt".into()),
+        },
+        SendTarget {
+            path: second.clone(),
+            name: Some("folder/two.bin".into()),
+        },
+        SendTarget {
+            path: third.clone(),
+            name: None,
+        },
     ];
     let outcomes = connection.send_files(&targets).await.expect("send");
     connection.close();
@@ -233,8 +242,14 @@ async fn a_batch_arrives_in_one_session_with_nested_names() {
         .collect();
     assert_eq!(saved, vec!["one.txt", "folder/two.bin", "three.txt"]);
 
-    assert_eq!(std::fs::read(root.join("one.txt")).unwrap(), b"first payload");
-    assert_eq!(std::fs::read(root.join("folder/two.bin")).unwrap(), vec![7u8; 300 * 1024]);
+    assert_eq!(
+        std::fs::read(root.join("one.txt")).unwrap(),
+        b"first payload"
+    );
+    assert_eq!(
+        std::fs::read(root.join("folder/two.bin")).unwrap(),
+        vec![7u8; 300 * 1024]
+    );
     assert_eq!(std::fs::read(root.join("three.txt")).unwrap(), b"");
     assert!(
         !root
@@ -284,9 +299,15 @@ async fn many_small_files_ride_pack_requests() {
             Err(err) => panic!("file {index} failed: {err}"),
         }
     }
-    assert!(std::fs::read(root.join("bundle/file-000.txt")).unwrap().is_empty());
+    assert!(
+        std::fs::read(root.join("bundle/file-000.txt"))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
-        std::fs::read(root.join("bundle/file-199.txt")).unwrap().len(),
+        std::fs::read(root.join("bundle/file-199.txt"))
+            .unwrap()
+            .len(),
         (199 * 37) % 4096
     );
     assert!(
