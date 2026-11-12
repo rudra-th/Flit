@@ -18,7 +18,8 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use flit_api::{Announce, DEFAULT_ALIAS, DeviceType, PROTO_VERSION, TLS_PORT};
-use flit_client::{Client, SendTarget};
+use flit_client::Client;
+use flit_core::collect_targets;
 use flit_crypto::{Identity, IdentityFile, StoreError, badge_of};
 use flit_discovery::{Discovery, DiscoveryConfig, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig};
@@ -525,80 +526,6 @@ async fn info(addr: SocketAddr, fingerprint: &str, pin: Option<&str>) -> i32 {
     0
 }
 
-/// `flit send`: send one file to a pinned peer.
-/// Expand command-line paths into the files a session will carry.
-///
-/// A directory keeps its own name at the receiver, so `flit send photos`
-/// produces `photos/…` rather than leaking the local absolute path. Symlinks
-/// are skipped: following them can escape the directory the user named and can
-/// loop.
-fn collect_inputs(paths: &[PathBuf], name: Option<&str>) -> Result<Vec<SendTarget>, String> {
-    if name.is_some() && paths.len() > 1 {
-        return Err("--name only applies when sending one file".into());
-    }
-
-    let mut out = Vec::new();
-    let mut skipped = 0usize;
-    for path in paths {
-        let metadata =
-            std::fs::metadata(path).map_err(|err| format!("{}: {err}", path.display()))?;
-        if metadata.is_dir() {
-            if name.is_some() {
-                return Err("--name only applies to a file, not a folder".into());
-            }
-            let base = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| format!("{} has no folder name", path.display()))?
-                .to_string();
-            let root = path.clone();
-            let mut stack = vec![root.clone()];
-            while let Some(dir) = stack.pop() {
-                let entries =
-                    std::fs::read_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-                for entry in entries {
-                    let entry = entry.map_err(|err| format!("{}: {err}", dir.display()))?;
-                    let kind = entry
-                        .file_type()
-                        .map_err(|err| format!("{}: {err}", entry.path().display()))?;
-                    if kind.is_dir() {
-                        stack.push(entry.path());
-                    } else if kind.is_file() {
-                        let full = entry.path();
-                        let relative = full.strip_prefix(&root).unwrap_or(&full);
-                        let remote =
-                            format!("{base}/{}", relative.to_string_lossy().replace('\\', "/"));
-                        out.push(SendTarget {
-                            path: full,
-                            name: Some(remote),
-                        });
-                    } else {
-                        // Symlinks, sockets and devices are not followed: a
-                        // link can point outside the folder or loop forever.
-                        skipped += 1;
-                    }
-                }
-            }
-        } else if metadata.is_file() {
-            out.push(SendTarget {
-                path: path.clone(),
-                name: name.map(str::to_owned),
-            });
-        } else {
-            return Err(format!("{} is not a file or directory", path.display()));
-        }
-    }
-
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    if skipped > 0 {
-        eprintln!("flit: skipped {skipped} non-regular file(s) in the folder walk");
-    }
-    if out.is_empty() {
-        return Err("nothing to send".into());
-    }
-    Ok(out)
-}
-
 /// `flit send`: one session, one or many files.
 async fn send(
     files: &[PathBuf],
@@ -607,13 +534,22 @@ async fn send(
     name: Option<&str>,
     pin: Option<&str>,
 ) -> i32 {
-    let targets = match collect_inputs(files, name) {
-        Ok(targets) => targets,
+    // The walk lives in the engine, not here: the desktop shell has to answer
+    // "what counts as sendable" exactly the same way.
+    let collected = match collect_targets(files, name) {
+        Ok(collected) => collected,
         Err(err) => {
             eprintln!("flit: {err}");
             return 1;
         }
     };
+    if collected.skipped > 0 {
+        eprintln!(
+            "flit: skipped {} non-regular file(s) in the folder walk",
+            collected.skipped
+        );
+    }
+    let targets = collected.targets;
 
     let mut client = match Client::new(addr, fingerprint) {
         Ok(client) => client,

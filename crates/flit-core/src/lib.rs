@@ -10,12 +10,45 @@
 //! * the engine never imports a UI crate;
 //! * the UI never implements protocol logic.
 //!
-//! M0 defines the boundary only. `start`, `send`, `receive`, the event stream
-//! and the doctor land alongside their transport in M1–M2.
+//! The shape is the same for every shell:
+//!
+//! ```no_run
+//! # async fn example(identity: std::sync::Arc<flit_core::Identity>) -> Result<(), flit_core::EngineError> {
+//! use flit_core::{Engine, EngineConfig, Event};
+//!
+//! let engine = Engine::start(identity, EngineConfig::default()).await?;
+//! let mut events = engine.subscribe();
+//! let paths = vec![std::path::PathBuf::from("photo.jpg")];
+//! let collected = flit_core::collect_targets(&paths, None).expect("readable files");
+//! // `send_to_peer` for a device from discovery, `send_to` for a QR code.
+//! # drop(collected);
+//! while let Ok(event) = events.recv().await {
+//!     match event {
+//!         Event::PeerSeen(peer) => println!("{} at {}", peer.alias, peer.addr),
+//!         Event::TransferFinished { id, items } => {
+//!             println!("{id}: {} item(s)", items.len());
+//!             break;
+//!         }
+//!         _ => {}
+//!     }
+//! }
+//! engine.stop().await;
+//! # Ok(())
+//! # }
+//! ```
 
 #![deny(missing_docs)]
 
+mod engine;
+mod targets;
+
+pub use engine::{
+    EVENT_BUFFER, Engine, EngineConfig, EngineError, Event, ItemOutcome, PeerView, TransferId,
+};
+pub use targets::{CollectError, Collected, collect_targets};
+
 pub use flit_api::{Info, PROTO_VERSION};
+pub use flit_client::SendTarget;
 pub use flit_crypto::{CryptoError, Identity};
 
 /// Build metadata reported by the engine and by `flit doctor`.

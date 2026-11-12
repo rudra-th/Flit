@@ -15,3 +15,9 @@ flit-crypto = { workspace = true }
 flit-discovery = { workspace = true }
 flit-server = { workspace = true }
 flit-storage = { workspace = true }
+log = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -16,6 +16,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 flit-api = { workspace = true }
 flit-client = { workspace = true }
+flit-core = { workspace = true }
 flit-crypto = { workspace = true }
 flit-discovery = { workspace = true }
 flit-server = { workspace = true }

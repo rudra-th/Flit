@@ -3,12 +3,14 @@
 **Files, straight across.** Send a folder from one device to another over your
 own network. No account, no cloud, no configuration.
 
-> **Status: pre-alpha.** The protocol is specified, and identity, path safety,
-> the M1 transport and M2 discovery work: a pinned TLS 1.3 connection that sends
-> a batch of files or a folder in one session, verifies every item end to end,
-> and installs each under a non-colliding name, plus multicast discovery and the
-> subnet-scan fallback for networks that filter it. The UIs and the browser page
-> are still ahead. Nothing is usable yet.
+> **Status: pre-alpha.** The protocol is specified, and the engine works:
+> identity, path safety, the pinned TLS 1.3 transport, discovery, multi-file
+> sessions, and resume across a sender restart. A folder with ten thousand files
+> goes over in one session, every item is verified end to end before it gets its
+> real name, and re-running an interrupted send streams only the bytes the
+> receiver still needs. The engine facade (`flit-core`) is in place; the desktop
+> shell, the Android app and the browser page are still ahead. Nothing is usable
+> yet.
 
 ---
 
