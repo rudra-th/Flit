@@ -3,12 +3,23 @@
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use flit_api::{DeviceType, ErrorCode};
+use flit_api::{
+    API_PREFIX, DeviceType, ErrorCode, PROTO_HEADER, PROTO_VERSION_STR, SessionResponse,
+};
 use flit_client::{Client, ClientError, SendOutcome, SendTarget};
 use flit_crypto::Identity;
 use flit_server::{Server, ServerConfig};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::{Request, StatusCode, header};
+use hyper_util::rt::TokioIo;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+use sha2::{Digest, Sha256};
 
 /// A scratch directory that does not need a temp-dir crate.
 fn scratch(name: &str) -> PathBuf {
@@ -318,6 +329,195 @@ async fn many_small_files_ride_pack_requests() {
             .unwrap()
             .any(|_| true),
         "packed items must not leave parts behind"
+    );
+
+    let _ = stop.send(());
+    handle.await.unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&sender_dir).ok();
+}
+
+/// A deliberately unpinned TLS client for tests that need raw HTTP.
+///
+/// The real client pins the receiver's fingerprint. Here the server was just
+/// started on loopback by this test, so a pin would only restate the fixture.
+struct RawClient {
+    sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+}
+
+/// Accepts any certificate. Only ever used against a loopback test server.
+#[derive(Debug)]
+struct AcceptAnyCertificate;
+
+impl ServerCertVerifier for AcceptAnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+impl RawClient {
+    async fn connect(addr: SocketAddr) -> Self {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("tls versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("tcp");
+        let name = ServerName::try_from("flit.test".to_string()).expect("server name");
+        let tls = connector.connect(name, stream).await.expect("tls");
+        let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .expect("handshake");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Self { sender }
+    }
+
+    async fn call(&mut self, request: Request<Full<Bytes>>) -> (StatusCode, Bytes) {
+        let response = self.sender.send_request(request).await.expect("response");
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body")
+            .to_bytes();
+        (status, body)
+    }
+
+    /// Announce one item and return the session id.
+    async fn prepare(&mut self, manifest: &str) -> String {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("{API_PREFIX}/upload"))
+            .header(header::HOST, "flit.test")
+            .header(PROTO_HEADER, PROTO_VERSION_STR)
+            .body(Full::new(Bytes::from(manifest.to_string())))
+            .expect("prepare request");
+        let (status, body) = self.call(request).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "prepare failed: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let response: SessionResponse = serde_json::from_slice(&body).expect("prepare response");
+        assert_eq!(response.accepted, vec!["i1".to_string()]);
+        response.session_id
+    }
+
+    /// Send bytes for one item, optionally declaring where they start.
+    async fn put(
+        &mut self,
+        session_id: &str,
+        item_id: &str,
+        body: &[u8],
+        offset: Option<u64>,
+    ) -> (StatusCode, Bytes) {
+        let mut builder = Request::builder()
+            .method("PUT")
+            .uri(format!("{API_PREFIX}/upload/{session_id}/{item_id}"))
+            .header(header::HOST, "flit.test")
+            .header(PROTO_HEADER, PROTO_VERSION_STR);
+        if let Some(offset) = offset {
+            builder = builder.header(header::CONTENT_RANGE, format!("bytes {offset}-"));
+        }
+        let request = builder
+            .body(Full::new(Bytes::copy_from_slice(body)))
+            .expect("put request");
+        self.call(request).await
+    }
+}
+
+/// A sender that dies mid-file leaves a partial `.part` and an open session.
+/// Re-running the same command must adopt that session and resume, not start
+/// over: this is the `kill -9` promise, exercised without the signal.
+#[tokio::test]
+async fn an_interrupted_send_resumes_in_the_same_session() {
+    let identity = Identity::from_secret_bytes([27u8; 32]);
+    let root = scratch("resume");
+    let sender_dir = scratch("resume-src");
+    let payload: Vec<u8> = (0..1024 * 1024).map(|index| (index % 251) as u8).collect();
+    let source = sender_dir.join("big.bin");
+    std::fs::write(&source, &payload).unwrap();
+
+    let (server, addr) = start(&identity, &root).await;
+    let (stop, handle) = spawn(server);
+
+    let digest = hex::encode(Sha256::digest(&payload));
+    let manifest = format!(
+        "{{\"id\":\"i1\",\"name\":\"big.bin\",\"size\":{},\"sha256\":\"{digest}\",\"kind\":\"file\"}}\n",
+        payload.len()
+    );
+
+    let mut raw = RawClient::connect(addr).await;
+    let session_id = raw.prepare(&manifest).await;
+
+    // The connection dies after 64 KiB of a 1 MiB file. The receiver answers
+    // `400` because the body was short, but keeps what it already wrote.
+    let partial = 64 * 1024;
+    let (status, _) = raw.put(&session_id, "i1", &payload[..partial], None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a short body is refused");
+
+    let part = root
+        .join(".flit")
+        .join("parts")
+        .join(&session_id)
+        .join("0.part");
+    assert_eq!(
+        std::fs::metadata(&part).expect("part file").len(),
+        partial as u64,
+        "the receiver keeps the bytes it already has"
+    );
+
+    // The same command again. Its manifest matches the interrupted one, so the
+    // receiver hands back the open session; the first `PUT` gets a `308` at
+    // 64 KiB and the rest of the file follows from there.
+    let client = Client::new(addr, &identity.fingerprint()).unwrap();
+    let mut connection = client.connect().await.unwrap();
+    let outcome = connection.send_file(&source, None).await.expect("resume");
+    connection.close();
+    assert!(matches!(outcome, SendOutcome::Verified(_)));
+
+    assert_eq!(std::fs::read(root.join("big.bin")).unwrap(), payload);
+    assert!(
+        !root.join(".flit").join("parts").join(&session_id).exists(),
+        "the interrupted session was resumed and cleaned up, not abandoned"
     );
 
     let _ = stop.send(());

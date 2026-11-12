@@ -22,6 +22,7 @@ use flit_api::{
 use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Bytes, Frame};
+use hyper::header::{CONTENT_RANGE, HeaderValue};
 use hyper::{Method, StatusCode};
 use sha2::{Digest, Sha256};
 use tokio::fs::File;
@@ -153,14 +154,29 @@ impl Connection {
         // them instead of one per file. A pack carries each item whole, so a
         // failed pack falls back to `PUT` and the normal resume path decides
         // whether the receiver already has the bytes.
+        // Items the receiver already holds part of start from its offset. This
+        // is how a re-run after a crash avoids sending bytes twice; without it
+        // the first `PUT` would carry the whole file and be answered with a
+        // `308`.
+        let resume_offset =
+            |item: &ManifestItem| session.resume.get(&item.id).copied().unwrap_or(0);
+
         let packable: Vec<usize> = prepared
             .iter()
             .enumerate()
             .filter(|(_, (_, item))| {
-                accepted.contains(item.id.as_str()) && item.size <= PACK_THRESHOLD
+                accepted.contains(item.id.as_str())
+                    // A pack replaces an item whole, so partial items take `PUT`.
+                    && resume_offset(item) == 0
+                    && item.size <= PACK_THRESHOLD
             })
             .map(|(position, _)| position)
             .collect();
+
+        // Positions that travelled in a pack request. Everything else takes
+        // `PUT`, including small items excluded above because the receiver
+        // already held part of them.
+        let packed: HashSet<usize> = packable.iter().copied().collect();
 
         let mut start = 0;
         while start < packable.len() {
@@ -188,7 +204,12 @@ impl Connection {
                 for &position in &packable[start..end] {
                     let (index, item) = &prepared[position];
                     if let Err(err) = self
-                        .upload(&session.session_id, item, &targets[*index].path)
+                        .upload(
+                            &session.session_id,
+                            item,
+                            &targets[*index].path,
+                            resume_offset(item),
+                        )
                         .await
                     {
                         outcomes[*index] = Some(FileOutcome {
@@ -219,13 +240,18 @@ impl Connection {
                 failed = true;
                 continue;
             }
-            if item.size <= PACK_THRESHOLD {
+            if packed.contains(index) {
                 // Already sent in a pack request, or its fallback failed and
                 // recorded an outcome above.
                 continue;
             }
             if let Err(err) = self
-                .upload(&session.session_id, item, &targets[*index].path)
+                .upload(
+                    &session.session_id,
+                    item,
+                    &targets[*index].path,
+                    resume_offset(item),
+                )
                 .await
             {
                 outcomes[*index] = Some(FileOutcome {
@@ -327,22 +353,38 @@ impl Connection {
             .map_err(|e| ClientError::Decode(format!("bad prepare response: {e}")))
     }
 
-    /// Stream the bytes, following `308` offsets until the receiver has them all.
+    /// Stream the bytes from `offset`, following `308` offsets until the
+    /// receiver has them all.
     async fn upload(
         &mut self,
         session_id: &str,
         item: &ManifestItem,
         path: &Path,
+        offset: u64,
     ) -> Result<(), ClientError> {
-        let mut offset = 0u64;
+        if offset >= item.size {
+            // The receiver has the whole item, including the empty-file case.
+            // `finish` still verifies and installs it.
+            return Ok(());
+        }
+        let mut offset = offset;
 
         for _ in 0..MAX_RESUME_ATTEMPTS {
             let body = file_body(path, offset).await?;
-            let request = self.request(
+            let mut request = self.request(
                 Method::PUT,
                 format!("{API_PREFIX}/upload/{session_id}/{}", item.id),
                 body,
             )?;
+            if offset > 0 {
+                // The body starts at `offset`, and the receiver will only
+                // accept it there if the request says so. Without this header
+                // it sees a body starting at zero, answers `308` again, and
+                // the loop spins until it gives up.
+                let value = HeaderValue::from_str(&format!("bytes {offset}-"))
+                    .map_err(|e| ClientError::Decode(format!("bad resume offset: {e}")))?;
+                request.headers_mut().insert(CONTENT_RANGE, value);
+            }
             let timeout = self.transfer_timeout;
             let (status, headers, body) = self.execute_within(request, timeout).await?;
 

@@ -312,7 +312,8 @@ Response `201`:
   "session_id": "s-7f3a",
   "accepted": ["a1", "a2", "a3"],
   "rejected": [{ "id": "a4", "reason": "too_large" }],
-  "offset": 0
+  "offset": 0,
+  "resume": { "a1": 1048576 }
 }
 ```
 
@@ -323,15 +324,43 @@ If **every** item is rejected there is nothing to do, so the receiver answers
 `400 bad_request` and creates no session. A sender that gets this must fix its
 manifest rather than retry the same request.
 
+**Prepare is idempotent for an identical manifest.** A sender that is killed and
+re-runs the same command presents the same items in the same order, so the
+receiver answers with the session it already has instead of opening a new one:
+
+- The session must still be open (not swept, not cancelled) and must have no
+  committed item. A session with anything installed is finished or finishing, so
+  it is not eligible.
+- `session_id` is the existing one and `accepted`/`rejected` are recomputed from
+  the items it holds, so the sender sees the same plan it saw before.
+- Partial `.part` bytes are kept, and **`resume` says how many**: an item id maps
+  to the number of bytes the receiver already has. The sender streams from that
+  offset (6.4), so a sender killed at 99% of a large file sends 1%, not 100%.
+  This is why resume works across a process restart without a local journal.
+  Items the receiver holds whole are listed at their full size, and the sender
+  skips them entirely; `finish` still verifies and installs them.
+- The match is a digest over ids, names, sizes, hashes, kinds and inline text,
+  not just a count, so a different transfer on the same root always gets a new
+  session.
+
+This is a receiver-side optimization. A sender is free to abandon the returned
+session and send under a new manifest; the old one is swept after an hour.
+
 ### 6.4 `PUT /api/v1/upload/{session}/{item}`
 
 Send one file's bytes. Body is the raw file.
 
-- First attempt: no `Content-Range`, body starts at byte 0.
-- Resume: `Content-Range: bytes 1048576-` (or `bytes 1048576-5242879/5242880`).
+- First attempt: no `Content-Range`, body starts at byte 0. This is correct for a
+  fresh item and for a sender that ignores `resume`.
+- Resume: the sender starts at the offset the prepare response gave in `resume`
+  for that id, and sends `Content-Range: bytes 1048576-` (or
+  `bytes 1048576-5242879/5242880`).
 - If the receiver already has **more** bytes than the range start, it returns
   `308` with `X-Flit-Offset: <committed>` and an empty body. The client resumes
-  from that offset.
+  from that offset. The receiver answers before reading the body it was sent, so
+  a `308` may be followed by the connection closing; a sender that sees one
+  should reconnect and continue from `X-Flit-Offset`. Senders that follow the
+  `resume` map never need this path.
 - If the range start is **beyond** what the receiver has, that is a request to
   skip bytes that were never sent: `409 conflict`, and the sender restarts the
   item from the receiver's offset.

@@ -327,6 +327,14 @@ pub struct SessionResponse {
     /// Bytes already committed for a resumed session. Zero for a new one.
     #[serde(default)]
     pub offset: u64,
+    /// Bytes the receiver already holds, by item id.
+    ///
+    /// A sender that is killed mid-batch and re-runs the same command gets the
+    /// open session back along with this map, so it can stream each item from
+    /// where the receiver stopped instead of sending bytes that would be
+    /// discarded. Only items with partial data appear.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub resume: std::collections::HashMap<String, u64>,
 }
 
 /// Body of `POST /api/v1/upload/{sid}/finish`.

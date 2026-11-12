@@ -101,6 +101,11 @@ pub enum Commit {
 pub struct Session {
     /// Opaque identifier used in request paths.
     pub id: String,
+    /// Digest of the manifest that opened this session.
+    ///
+    /// A restarted sender presents the same manifest again; matching this key
+    /// lets the receiver hand back the same session instead of starting over.
+    pub key: String,
     /// Destination root chosen by the user.
     pub root: PathBuf,
     /// Where `.part` files live.
@@ -115,11 +120,12 @@ pub struct Session {
 
 impl Session {
     /// Create the working directory for a new session.
-    fn create(root: &Path, id: String) -> std::io::Result<Self> {
+    fn create(root: &Path, id: String, key: String) -> std::io::Result<Self> {
         let dir = root.join(WORK_DIR).join("parts").join(&id);
         fs::create_dir_all(&dir)?;
         Ok(Self {
             id,
+            key,
             root: root.to_path_buf(),
             dir,
             items: HashMap::new(),
@@ -347,9 +353,17 @@ impl Sessions {
 
         self.sweep().await;
 
+        // A sender that was killed and re-ran the same command sends the same
+        // manifest. Hand back the open session so its `.part` bytes are not
+        // thrown away; the first `PUT` resumes from what the receiver has.
+        let key = manifest_key(&manifest);
+        if let Some(adopted) = self.adopt(&key, &manifest).await {
+            return Ok(adopted);
+        }
+
         let id = new_session_id();
         let mut session =
-            Session::create(&self.root, id.clone()).map_err(|_| ErrorCode::Internal)?;
+            Session::create(&self.root, id.clone(), key).map_err(|_| ErrorCode::Internal)?;
         let mut accepted = Vec::new();
         let mut rejected = Vec::new();
         for (index, item) in manifest.into_iter().enumerate() {
@@ -370,6 +384,7 @@ impl Sessions {
             accepted,
             rejected,
             offset: 0,
+            resume: HashMap::new(),
         };
         let session = Arc::new(Mutex::new(session));
         self.map.lock().await.insert(id, Arc::clone(&session));
@@ -379,6 +394,60 @@ impl Sessions {
     /// Look up a session by id.
     pub async fn get(&self, id: &str) -> Option<Arc<Mutex<Session>>> {
         self.map.lock().await.get(id).cloned()
+    }
+
+    /// Find an open session with the same manifest and hand it back.
+    ///
+    /// Only sessions with nothing committed are eligible: a session that has
+    /// installed files is either finishing or finished, and reusing it would
+    /// report those items as failures to the new sender. Anything still open
+    /// is reused as-is, including its partial bytes.
+    async fn adopt(
+        &self,
+        key: &str,
+        manifest: &[ManifestItem],
+    ) -> Option<(Arc<Mutex<Session>>, SessionResponse)> {
+        let map = self.map.lock().await;
+        for session in map.values() {
+            let Ok(guard) = session.try_lock() else {
+                continue;
+            };
+            if guard.cancelled || guard.key != key || guard.items.values().any(|item| item.done) {
+                continue;
+            }
+            let accepted: Vec<String> = manifest
+                .iter()
+                .filter(|item| guard.items.contains_key(&item.id))
+                .map(|item| item.id.clone())
+                .collect();
+            let rejected: Vec<RejectedItem> = manifest
+                .iter()
+                .filter(|item| !guard.items.contains_key(&item.id))
+                .map(|item| RejectedItem {
+                    id: item.id.clone(),
+                    reason: ErrorCode::BadRequest,
+                })
+                .collect();
+            if accepted.is_empty() {
+                continue;
+            }
+            let resume = guard
+                .items
+                .iter()
+                .filter(|(_, item)| item.received > 0)
+                .map(|(id, item)| (id.clone(), item.received))
+                .collect();
+            let response = SessionResponse {
+                session_id: guard.id.clone(),
+                accepted,
+                rejected,
+                offset: 0,
+                resume,
+            };
+            let session = Arc::clone(session);
+            return Some((session, response));
+        }
+        None
     }
 
     /// Forget a session. In-flight uploads notice via `cancelled`.
@@ -460,6 +529,31 @@ pub fn is_sha256(value: &str) -> bool {
 }
 
 /// 64 random bits, rendered as lowercase hex.
+/// Digest of everything that makes a manifest mean the same transfer.
+///
+/// Item ids are included because the client derives them from position in the
+/// batch, which is stable for a re-run of the same command. The text payload
+/// is included because text items carry their bytes in the manifest.
+fn manifest_key(manifest: &[ManifestItem]) -> String {
+    let mut hasher = Sha256::new();
+    for item in manifest {
+        hasher.update(item.id.as_bytes());
+        hasher.update([0]);
+        hasher.update(item.name.as_bytes());
+        hasher.update([0]);
+        hasher.update(item.size.to_le_bytes());
+        hasher.update(item.sha256.to_ascii_lowercase().as_bytes());
+        hasher.update(match item.kind {
+            ItemKind::File => [0u8],
+            ItemKind::Text => [1u8],
+        });
+        if let Some(text) = &item.text {
+            hasher.update(text.as_bytes());
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
 fn new_session_id() -> String {
     let mut bytes = [0u8; 8];
     if getrandom::getrandom(&mut bytes).is_err() {
@@ -662,6 +756,76 @@ mod tests {
         assert!(session.items.contains_key("ok"));
         drop(session);
 
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn an_identical_manifest_reuses_the_open_session() {
+        let root = scratch("adopt");
+        let sessions = Sessions::new(&root).unwrap();
+        let manifest = vec![
+            file_item("i1", "one.bin", b"first item bytes"),
+            file_item("i2", "two.bin", b"second item bytes"),
+        ];
+
+        let (session, first) = sessions.begin(manifest.clone()).await.unwrap();
+        assert_eq!(first.accepted, vec!["i1".to_string(), "i2".to_string()]);
+
+        // The sender dies mid-item; the receiver keeps what it already wrote.
+        {
+            let mut guard = session.lock().await;
+            let item = guard.items.get_mut("i1").unwrap();
+            feed(item, b"first ");
+            assert_eq!(item.received, 6);
+        }
+
+        // The same command again must not throw those bytes away.
+        let (resumed, second) = sessions.begin(manifest.clone()).await.unwrap();
+        assert_eq!(second.session_id, first.session_id);
+        assert_eq!(second.accepted, first.accepted);
+        assert!(second.rejected.is_empty());
+        {
+            let guard = resumed.lock().await;
+            assert_eq!(guard.items["i1"].received, 6);
+        }
+        assert!(Arc::ptr_eq(&session, &resumed));
+
+        // A different transfer gets a different session, even on the same root.
+        let (fresh, third) = sessions
+            .begin(vec![file_item("i1", "other.bin", b"different")])
+            .await
+            .unwrap();
+        assert_ne!(third.session_id, first.session_id);
+        assert!(!Arc::ptr_eq(&session, &fresh));
+
+        drop(session);
+        drop(resumed);
+        drop(fresh);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_session_with_committed_items_is_never_adopted() {
+        let root = scratch("adopt-done");
+        let sessions = Sessions::new(&root).unwrap();
+        let data = b"committed";
+        let manifest = vec![file_item("i1", "done.bin", data)];
+
+        let (session, first) = sessions.begin(manifest.clone()).await.unwrap();
+        {
+            let mut guard = session.lock().await;
+            feed(guard.items.get_mut("i1").unwrap(), data);
+            assert!(matches!(guard.commit("i1"), Commit::Verified { .. }));
+        }
+
+        // Re-sending the identical manifest starts over rather than reporting
+        // an item the sender still has as already finished.
+        let (second_session, second) = sessions.begin(manifest).await.unwrap();
+        assert_ne!(second.session_id, first.session_id);
+        assert_eq!(second.accepted, vec!["i1".to_string()]);
+
+        drop(session);
+        drop(second_session);
         fs::remove_dir_all(&root).ok();
     }
 
