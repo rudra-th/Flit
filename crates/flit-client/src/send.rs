@@ -19,8 +19,8 @@ use flit_api::{
     API_PREFIX, ErrorCode, FinishRequest, FinishResponse, ItemKind, ItemResult, ManifestItem,
     PACK_THRESHOLD, SessionResponse,
 };
-use futures_util::TryStreamExt;
-use http_body_util::{BodyExt, StreamBody};
+use futures_util::StreamExt;
+use http_body_util::{StreamBody, combinators::BoxBody};
 use hyper::body::{Bytes, Frame};
 use hyper::header::{CONTENT_RANGE, HeaderValue};
 use hyper::{Method, StatusCode};
@@ -29,7 +29,12 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
-use crate::{ClientError, Connection, RequestBody, bytes_body};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use crate::{Client, ClientError, Connection, RequestBody, SendProgress, bytes_body};
 
 /// How many times a `308` resume may bounce before giving up.
 const MAX_RESUME_ATTEMPTS: usize = 4;
@@ -114,13 +119,32 @@ impl Connection {
         &mut self,
         targets: &[SendTarget],
     ) -> Result<Vec<FileOutcome>, ClientError> {
+        self.send_files_with(targets, None).await
+    }
+
+    /// Send several files in one session, reporting live progress.
+    ///
+    /// `progress` is updated as bytes leave and as items get a result, so a UI
+    /// can draw a bar without waiting for the session to close. Cancelling it
+    /// stops the send at the next chunk boundary, tells the receiver to drop
+    /// the session, and returns [`ClientError::Cancelled`].
+    pub async fn send_files_with(
+        &mut self,
+        targets: &[SendTarget],
+        progress: Option<&SendProgress>,
+    ) -> Result<Vec<FileOutcome>, ClientError> {
+        let progress = progress.cloned().unwrap_or_default();
         let mut outcomes: Vec<Option<FileOutcome>> = (0..targets.len()).map(|_| None).collect();
         let mut prepared: Vec<(usize, ManifestItem)> = Vec::new();
 
         for (index, target) in targets.iter().enumerate() {
-            match build_item(index, target).await {
+            if progress.is_cancelled() {
+                return Err(ClientError::Cancelled);
+            }
+            match build_item(index, target, &progress).await {
                 Ok(item) => prepared.push((index, item)),
                 Err(err) => {
+                    progress.item_done();
                     outcomes[index] = Some(FileOutcome {
                         path: target.path.clone(),
                         name: offered_name(target),
@@ -133,6 +157,11 @@ impl Connection {
         if prepared.is_empty() {
             return Ok(finish_outcomes(outcomes));
         }
+
+        progress.set_totals(
+            prepared.iter().map(|(_, item)| item.size).sum(),
+            prepared.len(),
+        );
 
         let session = {
             let items: Vec<ManifestItem> = prepared.iter().map(|(_, item)| item.clone()).collect();
@@ -148,6 +177,18 @@ impl Connection {
             return Err(ClientError::Rejected(reason));
         }
 
+        let resume_offset =
+            |item: &ManifestItem| session.resume.get(&item.id).copied().unwrap_or(0);
+
+        // Bytes the receiver already holds count as sent, or a resumed send
+        // would start its bar at zero while most of the data is already there.
+        let already_held: u64 = prepared
+            .iter()
+            .filter(|(_, item)| accepted.contains(item.id.as_str()))
+            .map(|(_, item)| resume_offset(item))
+            .sum();
+        progress.add_bytes(already_held);
+
         let mut failed = false;
 
         // Small files travel in pack requests: one round trip for a group of
@@ -158,9 +199,6 @@ impl Connection {
         // is how a re-run after a crash avoids sending bytes twice; without it
         // the first `PUT` would carry the whole file and be answered with a
         // `308`.
-        let resume_offset =
-            |item: &ManifestItem| session.resume.get(&item.id).copied().unwrap_or(0);
-
         let packable: Vec<usize> = prepared
             .iter()
             .enumerate()
@@ -180,6 +218,10 @@ impl Connection {
 
         let mut start = 0;
         while start < packable.len() {
+            if progress.is_cancelled() {
+                self.cancel(&session.session_id).await;
+                return Err(ClientError::Cancelled);
+            }
             let mut end = start;
             let mut bytes = 0u64;
             while end < packable.len() {
@@ -191,33 +233,47 @@ impl Connection {
                 end += 1;
             }
 
-            if self
+            let sent = self
                 .pack_upload(
                     &session.session_id,
                     &prepared,
                     &packable[start..end],
                     targets,
+                    &progress,
                 )
-                .await
-                .is_err()
-            {
-                for &position in &packable[start..end] {
-                    let (index, item) = &prepared[position];
-                    if let Err(err) = self
-                        .upload(
-                            &session.session_id,
-                            item,
-                            &targets[*index].path,
-                            resume_offset(item),
-                        )
-                        .await
-                    {
-                        outcomes[*index] = Some(FileOutcome {
-                            path: targets[*index].path.clone(),
-                            name: item.name.clone(),
-                            result: Err(err),
-                        });
-                        failed = true;
+                .await;
+
+            match sent {
+                Ok(()) => {
+                    for _ in &packable[start..end] {
+                        progress.item_done();
+                    }
+                }
+                Err(_) => {
+                    for &position in &packable[start..end] {
+                        let (index, item) = &prepared[position];
+                        let outcome = self
+                            .upload(
+                                &session.session_id,
+                                item,
+                                &targets[*index].path,
+                                resume_offset(item),
+                                &progress,
+                            )
+                            .await;
+                        progress.item_done();
+                        if let Err(err) = outcome {
+                            outcomes[*index] = Some(FileOutcome {
+                                path: targets[*index].path.clone(),
+                                name: item.name.clone(),
+                                result: Err(err),
+                            });
+                            failed = true;
+                            if progress.is_cancelled() {
+                                self.cancel(&session.session_id).await;
+                                return Err(ClientError::Cancelled);
+                            }
+                        }
                     }
                 }
             }
@@ -225,6 +281,10 @@ impl Connection {
         }
 
         for (index, item) in &prepared {
+            if progress.is_cancelled() {
+                self.cancel(&session.session_id).await;
+                return Err(ClientError::Cancelled);
+            }
             if !accepted.contains(item.id.as_str()) {
                 let reason = session
                     .rejected
@@ -232,6 +292,7 @@ impl Connection {
                     .find(|rejected| rejected.id == item.id)
                     .map(|rejected| rejected.reason)
                     .unwrap_or(ErrorCode::BadRequest);
+                progress.item_done();
                 outcomes[*index] = Some(FileOutcome {
                     path: targets[*index].path.clone(),
                     name: item.name.clone(),
@@ -245,21 +306,27 @@ impl Connection {
                 // recorded an outcome above.
                 continue;
             }
-            if let Err(err) = self
+            let outcome = self
                 .upload(
                     &session.session_id,
                     item,
                     &targets[*index].path,
                     resume_offset(item),
+                    &progress,
                 )
-                .await
-            {
+                .await;
+            progress.item_done();
+            if let Err(err) = outcome {
                 outcomes[*index] = Some(FileOutcome {
                     path: targets[*index].path.clone(),
                     name: item.name.clone(),
                     result: Err(err),
                 });
                 failed = true;
+                if progress.is_cancelled() {
+                    self.cancel(&session.session_id).await;
+                    return Err(ClientError::Cancelled);
+                }
             }
         }
 
@@ -361,6 +428,7 @@ impl Connection {
         item: &ManifestItem,
         path: &Path,
         offset: u64,
+        progress: &SendProgress,
     ) -> Result<(), ClientError> {
         if offset >= item.size {
             // The receiver has the whole item, including the empty-file case.
@@ -370,7 +438,10 @@ impl Connection {
         let mut offset = offset;
 
         for _ in 0..MAX_RESUME_ATTEMPTS {
-            let body = file_body(path, offset).await?;
+            // Bytes counted for **this attempt**, so a `308` can correct the
+            // total: what the receiver kept is `offset`, not what was pushed.
+            let attempt = Arc::new(AtomicU64::new(0));
+            let body = file_body(path, offset, progress, Arc::clone(&attempt)).await?;
             let mut request = self.request(
                 Method::PUT,
                 format!("{API_PREFIX}/upload/{session_id}/{}", item.id),
@@ -391,17 +462,28 @@ impl Connection {
             match status {
                 StatusCode::NO_CONTENT => return Ok(()),
                 StatusCode::PERMANENT_REDIRECT => {
-                    offset = headers
+                    let next = headers
                         .get("x-flit-offset")
                         .and_then(|value| value.to_str().ok())
                         .and_then(|value| value.parse::<u64>().ok())
                         .ok_or_else(|| ClientError::Decode("308 without a usable offset".into()))?;
-                    if offset > item.size {
+                    if next > item.size {
                         return Err(ClientError::Decode(format!(
-                            "receiver claims {offset} of {} bytes",
+                            "receiver claims {next} of {} bytes",
                             item.size
                         )));
                     }
+
+                    // Make the progress bar agree with the receiver: bytes it
+                    // did not keep were never sent, and bytes it already had
+                    // are already done.
+                    let counted = attempt.load(Ordering::Relaxed);
+                    if next > counted {
+                        progress.add_bytes(next - counted);
+                    } else {
+                        progress.subtract_bytes(counted - next);
+                    }
+                    offset = next;
                 }
                 _ => return Err(status_error(status, &body)),
             }
@@ -423,6 +505,7 @@ impl Connection {
         prepared: &[(usize, ManifestItem)],
         positions: &[usize],
         targets: &[SendTarget],
+        progress: &SendProgress,
     ) -> Result<(), ClientError> {
         let mut body = Vec::new();
         for &position in positions {
@@ -466,6 +549,14 @@ impl Connection {
         if status != StatusCode::NO_CONTENT {
             return Err(status_error(status, &response));
         }
+        // Packs are one buffered body, so their bytes are counted when the
+        // receiver has them. A UI sees per-pack granularity, not per-frame.
+        // Only payload counts, not the framed header in front of it.
+        let payload: u64 = positions
+            .iter()
+            .map(|&position| prepared[position].1.size)
+            .sum();
+        progress.add_bytes(payload);
         Ok(())
     }
 
@@ -499,23 +590,59 @@ impl Connection {
     ///
     /// Best effort by design: this runs on the error path, and a failure to
     /// clean up must never replace the error that caused it.
+    ///
+    /// The common case is a connection that just died with the aborted body,
+    /// so the first attempt failing is expected and a fresh connection is
+    /// opened: the receiver still holds the session and still needs the
+    /// `DELETE`, or its bytes sit there until the sweeper runs.
     async fn cancel(&mut self, session_id: &str) {
-        let request = match self.request(
+        match self.request(
             Method::DELETE,
             format!("{API_PREFIX}/upload/{session_id}"),
             bytes_body(Bytes::new()),
         ) {
-            Ok(request) => request,
+            Ok(request) => match self.execute(request).await {
+                Ok((status, _, _)) if status == StatusCode::NO_CONTENT => return,
+                Ok((status, _, _)) => log::debug!("cancel answered {status}"),
+                Err(err) => log::debug!("cancel on the send connection failed: {err}"),
+            },
+            Err(err) => log::debug!("could not build the cancel request: {err}"),
+        }
+
+        let addr = self.addr;
+        let mut client = match Client::new(addr, &self.fingerprint) {
+            Ok(client) => client,
             Err(err) => {
-                log::debug!("could not build the cancel request: {err}");
+                log::debug!("could not rebuild a client to cancel: {err}");
                 return;
             }
         };
-        match self.execute(request).await {
-            Ok((status, _, _)) if status == StatusCode::NO_CONTENT => {}
-            Ok((status, _, _)) => log::debug!("cancel answered {status}"),
-            Err(err) => log::debug!("cancel failed: {err}"),
+        if let Some(pin) = &self.pin {
+            client = client.with_pin(pin.clone());
         }
+        client = client
+            .with_timeout(self.control_timeout)
+            .with_transfer_timeout(self.transfer_timeout);
+        let mut fresh = match client.connect().await {
+            Ok(fresh) => fresh,
+            Err(err) => {
+                log::debug!("could not reconnect to cancel: {err}");
+                return;
+            }
+        };
+        let request = fresh.request(
+            Method::DELETE,
+            format!("{API_PREFIX}/upload/{session_id}"),
+            bytes_body(Bytes::new()),
+        );
+        if let Ok(request) = request {
+            match fresh.execute(request).await {
+                Ok((status, _, _)) if status == StatusCode::NO_CONTENT => {}
+                Ok((status, _, _)) => log::debug!("cancel on a fresh connection answered {status}"),
+                Err(err) => log::debug!("cancel on a fresh connection failed: {err}"),
+            }
+        }
+        fresh.close();
     }
 }
 
@@ -535,7 +662,11 @@ fn offered_name(target: &SendTarget) -> String {
 }
 
 /// Hash and describe one file, with its id derived from its place in the batch.
-async fn build_item(index: usize, target: &SendTarget) -> Result<ManifestItem, ClientError> {
+async fn build_item(
+    index: usize,
+    target: &SendTarget,
+    progress: &SendProgress,
+) -> Result<ManifestItem, ClientError> {
     let path = &target.path;
     let metadata = tokio::fs::metadata(path)
         .await
@@ -553,7 +684,7 @@ async fn build_item(index: usize, target: &SendTarget) -> Result<ManifestItem, C
         ));
     }
 
-    let sha256 = hash_file(path).await?;
+    let sha256 = hash_file(path, progress).await?;
     let mtime = metadata
         .modified()
         .ok()
@@ -586,7 +717,11 @@ fn finish_outcomes(outcomes: Vec<Option<FileOutcome>>) -> Vec<FileOutcome> {
 }
 
 /// SHA-256 of a file, streamed so a 4 GiB file does not need 4 GiB of memory.
-async fn hash_file(path: &Path) -> Result<String, ClientError> {
+///
+/// Hashing happens before the manifest exists, which for a large file is the
+/// longest silent stretch of a send. It honours cancellation per chunk for that
+/// reason: clicking stop should not wait for a 100 GiB file to finish hashing.
+async fn hash_file(path: &Path, progress: &SendProgress) -> Result<String, ClientError> {
     let mut file = File::open(path)
         .await
         .map_err(|source| local_error(path, source))?;
@@ -594,6 +729,9 @@ async fn hash_file(path: &Path) -> Result<String, ClientError> {
     let mut buffer = vec![0u8; 256 * 1024];
 
     loop {
+        if progress.is_cancelled() {
+            return Err(ClientError::Cancelled);
+        }
         let read = file
             .read(&mut buffer)
             .await
@@ -608,7 +746,16 @@ async fn hash_file(path: &Path) -> Result<String, ClientError> {
 }
 
 /// A body that streams `path` from `offset` to the end.
-async fn file_body(path: &Path, offset: u64) -> Result<RequestBody, ClientError> {
+///
+/// Each chunk is counted into `progress` (and `attempt`) as it leaves, and a
+/// cancelled send aborts the request at the next chunk instead of finishing a
+/// file nobody is waiting for.
+async fn file_body(
+    path: &Path,
+    offset: u64,
+    progress: &SendProgress,
+    attempt: Arc<AtomicU64>,
+) -> Result<RequestBody, ClientError> {
     let mut file = File::open(path)
         .await
         .map_err(|source| local_error(path, source))?;
@@ -618,8 +765,25 @@ async fn file_body(path: &Path, offset: u64) -> Result<RequestBody, ClientError>
             .map_err(|source| local_error(path, source))?;
     }
 
-    let stream = ReaderStream::with_capacity(file, 256 * 1024).map_ok(Frame::data);
-    Ok(StreamBody::new(stream).boxed())
+    let counted = progress.clone();
+    let stream = ReaderStream::with_capacity(file, 256 * 1024).map(
+        move |chunk| -> Result<Frame<Bytes>, std::io::Error> {
+            let chunk = chunk?;
+            if counted.is_cancelled() {
+                // Failing the body aborts the request; the caller sees the
+                // cancel flag and reports it as a cancel, not a network error.
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "send cancelled",
+                ));
+            }
+            let len = chunk.len() as u64;
+            counted.add_bytes(len);
+            attempt.fetch_add(len, Ordering::Relaxed);
+            Ok(Frame::data(chunk))
+        },
+    );
+    Ok(BoxBody::new(StreamBody::new(stream)))
 }
 
 /// Wrap a local I/O error with the path that caused it.

@@ -16,8 +16,10 @@
 
 #![deny(missing_docs)]
 
+mod progress;
 mod send;
 
+pub use progress::SendProgress;
 pub use send::{FileOutcome, SavedFile, SendOutcome, SendTarget};
 
 use std::{
@@ -117,6 +119,12 @@ pub enum ClientError {
     /// The receiver refused the item during prepare.
     #[error("the receiver refused the item: {0}")]
     Rejected(flit_api::ErrorCode),
+    /// The sender was cancelled by [`crate::SendProgress::cancel`].
+    ///
+    /// Not a failure: the receiver was told to drop the session, so nothing is
+    /// half-installed and a later send of the same files starts clean.
+    #[error("the send was cancelled")]
+    Cancelled,
     /// The receiver's hash did not match; nothing was saved.
     #[error("the receiver could not verify the file, so it was not saved")]
     NotVerified,

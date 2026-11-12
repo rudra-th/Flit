@@ -4,12 +4,13 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use flit_api::{
     API_PREFIX, DeviceType, ErrorCode, PROTO_HEADER, PROTO_VERSION_STR, SessionResponse,
 };
-use flit_client::{Client, ClientError, SendOutcome, SendTarget};
+use flit_client::{Client, ClientError, SendOutcome, SendProgress, SendTarget};
 use flit_crypto::Identity;
 use flit_server::{Server, ServerConfig};
 use http_body_util::{BodyExt, Full};
@@ -579,4 +580,125 @@ async fn cancelling_a_session_drops_its_partial_bytes() {
     let _ = stop.send(());
     handle.await.unwrap();
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// A UI reads these counters while the send is still in flight, so they must be
+/// complete by the time it returns and must count pack and PUT bytes alike.
+#[tokio::test]
+async fn progress_reaches_the_declared_total_for_every_item() {
+    let identity = Identity::from_secret_bytes([42u8; 32]);
+    let root = scratch("progress");
+    let sender_dir = scratch("progress-src");
+
+    let big = sender_dir.join("big.bin");
+    let big_bytes: Vec<u8> = (0..512 * 1024).map(|index| (index % 251) as u8).collect();
+    std::fs::write(&big, &big_bytes).unwrap();
+    let small = sender_dir.join("small.txt");
+    let small_bytes = b"a small file that rides a pack";
+    std::fs::write(&small, small_bytes).unwrap();
+    let empty = sender_dir.join("empty.txt");
+    std::fs::write(&empty, b"").unwrap();
+
+    let targets = vec![
+        SendTarget {
+            path: big,
+            name: Some("big.bin".to_string()),
+        },
+        SendTarget {
+            path: small,
+            name: Some("small.txt".to_string()),
+        },
+        SendTarget {
+            path: empty,
+            name: Some("empty.txt".to_string()),
+        },
+    ];
+
+    let (server, addr) = start(&identity, &root).await;
+    let (stop, handle) = spawn(server);
+
+    let client = Client::new(addr, &identity.fingerprint()).unwrap();
+    let mut connection = client.connect().await.unwrap();
+    let progress = SendProgress::new();
+    let outcomes = connection
+        .send_files_with(&targets, Some(&progress))
+        .await
+        .expect("send");
+    connection.close();
+
+    assert_eq!(outcomes.len(), 3);
+    assert_eq!(progress.total_files(), 3);
+    assert_eq!(progress.files_done(), 3, "every item got a result");
+    assert_eq!(
+        progress.total_bytes(),
+        big_bytes.len() as u64 + small_bytes.len() as u64,
+        "total is the declared size of every item"
+    );
+    assert_eq!(
+        progress.sent_bytes(),
+        progress.total_bytes(),
+        "a finished send has sent exactly what it declared"
+    );
+    assert_eq!(progress.fraction(), 1.0);
+
+    let _ = stop.send(());
+    handle.await.unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&sender_dir).ok();
+}
+
+/// Cancel is cooperative but prompt: it must stop inside a large file, ask the
+/// receiver to drop the session, and leave no partial file or part bytes.
+#[tokio::test]
+async fn cancelling_a_send_drops_the_session_and_writes_nothing() {
+    let identity = Identity::from_secret_bytes([43u8; 32]);
+    let root = scratch("cancel-progress");
+    let sender_dir = scratch("cancel-progress-src");
+
+    let source = sender_dir.join("stubborn.bin");
+    let payload = vec![7u8; 64 * 1024 * 1024];
+    std::fs::write(&source, &payload).unwrap();
+
+    let (server, addr) = start(&identity, &root).await;
+    let (stop, handle) = spawn(server);
+
+    let client = Client::new(addr, &identity.fingerprint()).unwrap();
+    let mut connection = client.connect().await.unwrap();
+    let progress = SendProgress::new();
+
+    let watcher = progress.clone();
+    let cancelling = tokio::spawn(async move {
+        while watcher.sent_bytes() < 1024 * 1024 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        watcher.cancel();
+    });
+
+    let outcome = connection
+        .send_files_with(
+            &[SendTarget {
+                path: source,
+                name: None,
+            }],
+            Some(&progress),
+        )
+        .await;
+    cancelling.await.unwrap();
+    connection.close();
+
+    assert!(
+        matches!(outcome, Err(ClientError::Cancelled)),
+        "a cancelled send reports a cancel, not a network error: {outcome:?}"
+    );
+    assert!(!root.join("stubborn.bin").exists(), "nothing is installed");
+    let parts = root.join(".flit").join("parts");
+    assert!(
+        !parts.is_dir() || std::fs::read_dir(&parts).unwrap().next().is_none(),
+        "the session was dropped, not left for the sweeper"
+    );
+
+    let _ = stop.send(());
+    handle.await.unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&sender_dir).ok();
 }

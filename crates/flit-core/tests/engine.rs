@@ -286,3 +286,128 @@ async fn sending_nothing_or_to_an_unknown_device_is_refused_before_any_work() {
     engine.stop().await;
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[tokio::test]
+async fn a_send_reports_progress_between_started_and_finished() {
+    let (receiver, receiver_root, receiver_identity) = start_engine(44, "progress-receiver").await;
+    let (sender, sender_root, _) = start_engine(45, "progress-sender").await;
+
+    // Large enough that the 200 ms ticker fires while bytes are moving; a send
+    // that finishes sooner legitimately has no intermediate state to show.
+    let payload = vec![0u8; 256 * 1024 * 1024];
+    let source = sender_root.join("bulk.bin");
+    std::fs::write(&source, &payload).unwrap();
+
+    let mut events = sender.subscribe();
+    let id = sender
+        .send_to(
+            receiver.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: source,
+                name: Some("bulk.bin".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+
+    let mut saw_bytes = false;
+    let mut declared = 0u64;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(60), events.recv())
+            .await
+            .expect("an event within 60 s")
+            .expect("event stream stayed open");
+        match event {
+            Event::TransferProgress {
+                id: progress_id,
+                sent,
+                total,
+                ..
+            } => {
+                assert_eq!(progress_id, id);
+                assert!(
+                    sent <= total,
+                    "progress never overshoots: {sent} of {total}"
+                );
+                declared = total;
+                saw_bytes |= sent > 0;
+            }
+            Event::TransferFinished {
+                id: finished,
+                items,
+            } => {
+                assert_eq!(finished, id);
+                assert_eq!(items[0].bytes, payload.len() as u64);
+                break;
+            }
+            Event::TransferFailed { reason, .. } => panic!("send failed: {reason}"),
+            Event::TransferCancelled { .. } => panic!("send was cancelled unexpectedly"),
+            _ => {}
+        }
+    }
+    assert!(saw_bytes, "a 256 MiB send reports bytes while it runs");
+    assert_eq!(declared, payload.len() as u64);
+
+    sender.stop().await;
+    receiver.stop().await;
+    std::fs::remove_dir_all(&receiver_root).ok();
+    std::fs::remove_dir_all(&sender_root).ok();
+}
+
+#[tokio::test]
+async fn cancelling_a_send_reports_it_and_writes_nothing() {
+    let (receiver, receiver_root, receiver_identity) = start_engine(46, "cancel-receiver").await;
+    let (sender, sender_root, _) = start_engine(47, "cancel-sender").await;
+
+    let payload = vec![0u8; 256 * 1024 * 1024];
+    let source = sender_root.join("bulk.bin");
+    std::fs::write(&source, &payload).unwrap();
+
+    let mut events = sender.subscribe();
+    let id = sender
+        .send_to(
+            receiver.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: source,
+                name: Some("bulk.bin".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+
+    // Cancel once the wire is actually moving, so this exercises the upload
+    // path rather than cancelling during hashing.
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+            .await
+            .expect("an event within 30 s")
+            .expect("event stream stayed open");
+        if let Event::TransferProgress { sent, .. } = event {
+            if sent > 0 {
+                break;
+            }
+        }
+    }
+    assert!(sender.cancel(id).await, "a running send can be cancelled");
+
+    match terminal(&mut events).await {
+        Event::TransferCancelled { id: cancelled } => assert_eq!(cancelled, id),
+        other => panic!("expected a cancelled transfer, got {other:?}"),
+    }
+    assert!(
+        !receiver_root.join("bulk.bin").exists(),
+        "nothing installed"
+    );
+    let parts = receiver_root.join(".flit").join("parts");
+    assert!(
+        !parts.is_dir() || std::fs::read_dir(&parts).unwrap().next().is_none(),
+        "the receiver dropped the session instead of keeping partial bytes"
+    );
+
+    sender.stop().await;
+    receiver.stop().await;
+    std::fs::remove_dir_all(&receiver_root).ok();
+    std::fs::remove_dir_all(&sender_root).ok();
+}

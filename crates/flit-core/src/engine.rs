@@ -21,7 +21,7 @@ use std::{
 };
 
 use flit_api::{DeviceType, Info};
-use flit_client::{Client, ClientError, FileOutcome, SendTarget};
+use flit_client::{Client, ClientError, FileOutcome, SendProgress, SendTarget};
 use flit_crypto::{Badge, Identity, badge_of};
 use flit_discovery::{Discovery, DiscoveryConfig, Peer, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig, ServerError};
@@ -39,6 +39,12 @@ pub const EVENT_BUFFER: usize = 256;
 
 /// How often the engine compares the discovery table with what it last said.
 const PEER_POLL: Duration = Duration::from_secs(1);
+
+/// How often a running send reports bytes moved.
+///
+/// Faster than a UI can draw and slower than the wire: progress is a courtesy,
+/// never a per-frame cost.
+const PROGRESS_TICK: Duration = Duration::from_millis(200);
 
 /// How long [`Engine::stop`] waits for the listener to close.
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -164,6 +170,23 @@ pub enum Event {
         /// One entry per file, in the order they were offered.
         items: Vec<ItemOutcome>,
     },
+    /// A send moved forward, at most a few times a second.
+    ///
+    /// Sent only when something changed, so a stalled transfer is silent
+    /// instead of emitting the same numbers.
+    TransferProgress {
+        /// Which send.
+        id: TransferId,
+        /// Bytes handed to the network, including bytes a resumed session
+        /// already held.
+        sent: u64,
+        /// Bytes the send covers in total.
+        total: u64,
+        /// Files with a final result.
+        files_done: usize,
+        /// Files in the send.
+        files_total: usize,
+    },
     /// The session itself failed, before any per-item result existed.
     TransferFailed {
         /// Which send.
@@ -251,8 +274,16 @@ struct Inner {
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
     discovery: Mutex<Option<Discovery>>,
     watch: Mutex<Option<JoinHandle<()>>>,
-    transfers: Mutex<HashMap<TransferId, JoinHandle<()>>>,
+    transfers: Mutex<HashMap<TransferId, Running>>,
     next_transfer: AtomicU64,
+}
+
+/// One send that has been handed to the network.
+struct Running {
+    handle: JoinHandle<()>,
+    /// Shared with the send task: cancelling reads and writes these counters,
+    /// so no message has to reach a blocked socket.
+    progress: SendProgress,
 }
 
 impl Engine {
@@ -460,7 +491,42 @@ impl Engine {
             .map(|metadata| metadata.len())
             .sum();
         let events = self.inner.events.clone();
+        let progress = SendProgress::new();
+        progress.set_totals(bytes, files);
 
+        // Progress is read from the counters on a timer rather than pushed from
+        // the sender: a UI that is not drawing must cost the wire nothing.
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ticker = {
+            let events = events.clone();
+            let progress = progress.clone();
+            let done = Arc::clone(&done);
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(PROGRESS_TICK);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut last = (0u64, 0usize);
+                loop {
+                    tick.tick().await;
+                    if done.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let now = (progress.sent_bytes(), progress.files_done());
+                    if now == last {
+                        continue;
+                    }
+                    last = now;
+                    let _ = events.send(Event::TransferProgress {
+                        id,
+                        sent: now.0,
+                        total: progress.total_bytes(),
+                        files_done: now.1,
+                        files_total: progress.total_files(),
+                    });
+                }
+            })
+        };
+
+        let sending = progress.clone();
         let handle = tokio::spawn(async move {
             let _ = events.send(Event::TransferStarted {
                 id,
@@ -472,6 +538,8 @@ impl Engine {
             let mut connection = match client.connect().await {
                 Ok(connection) => connection,
                 Err(err) => {
+                    done.store(true, Ordering::Relaxed);
+                    ticker.abort();
                     let _ = events.send(Event::TransferFailed {
                         id,
                         reason: err.to_string(),
@@ -479,8 +547,13 @@ impl Engine {
                     return;
                 }
             };
-            let result = connection.send_files(&targets).await;
+            let result = connection.send_files_with(&targets, Some(&sending)).await;
             connection.close();
+
+            // No progress may follow a terminal event, or a UI shows a bar
+            // moving for a send it was already told had finished.
+            done.store(true, Ordering::Relaxed);
+            ticker.abort();
 
             match result {
                 Ok(outcomes) => {
@@ -489,6 +562,9 @@ impl Engine {
                         .map(ItemOutcome::from_file_outcome)
                         .collect();
                     let _ = events.send(Event::TransferFinished { id, items });
+                }
+                Err(ClientError::Cancelled) => {
+                    let _ = events.send(Event::TransferCancelled { id });
                 }
                 Err(err) => {
                     let _ = events.send(Event::TransferFailed {
@@ -500,23 +576,24 @@ impl Engine {
         });
 
         let mut transfers = self.inner.transfers.lock().await;
-        transfers.retain(|_, handle| !handle.is_finished());
-        transfers.insert(id, handle);
+        transfers.retain(|_, running| !running.handle.is_finished());
+        transfers.insert(id, Running { handle, progress });
         Ok(id)
     }
 
     /// Stop a send that is still running.
     ///
-    /// Returns `false` when the id is unknown or already finished. The sender
-    /// closes the connection; the receiver keeps whatever it verified and the
-    /// session it had open, which a later send of the same files resumes.
+    /// Returns `false` when the id is unknown or already finished. Cancelling is
+    /// cooperative: the sender abandons the request at the next chunk, tells the
+    /// receiver to drop the session, and reports [`Event::TransferCancelled`].
+    /// Files the receiver already verified stay installed; nothing is left
+    /// half-written.
     pub async fn cancel(&self, id: TransferId) -> bool {
         let mut transfers = self.inner.transfers.lock().await;
-        transfers.retain(|_, handle| !handle.is_finished());
-        match transfers.remove(&id) {
-            Some(handle) => {
-                handle.abort();
-                let _ = self.inner.events.send(Event::TransferCancelled { id });
+        transfers.retain(|_, running| !running.handle.is_finished());
+        match transfers.get(&id) {
+            Some(running) => {
+                running.progress.cancel();
                 true
             }
             None => false,
@@ -526,7 +603,7 @@ impl Engine {
     /// Ids of sends that have not finished or been cancelled.
     pub async fn running(&self) -> Vec<TransferId> {
         let mut transfers = self.inner.transfers.lock().await;
-        transfers.retain(|_, handle| !handle.is_finished());
+        transfers.retain(|_, running| !running.handle.is_finished());
         let mut ids: Vec<TransferId> = transfers.keys().copied().collect();
         ids.sort_unstable();
         ids
@@ -536,8 +613,10 @@ impl Engine {
     ///
     /// The engine is finished afterwards; start a new one to receive again.
     pub async fn stop(&self) {
-        for (_, handle) in self.inner.transfers.lock().await.drain() {
-            handle.abort();
+        for (_, running) in self.inner.transfers.lock().await.drain() {
+            // Shutting down is not a user cancel: there is no window left to
+            // send a `DELETE`, so the receiver sweeps the session.
+            running.handle.abort();
         }
         if let Some(watch) = self.inner.watch.lock().await.take() {
             watch.abort();
