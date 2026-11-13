@@ -101,6 +101,20 @@ impl PeerView {
     }
 }
 
+/// What multicast discovery is doing, as the engine knows it.
+///
+/// A shell shows this instead of guessing: an unavailable discovery is a
+/// warning in the window, not a reason to refuse to send or receive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryState {
+    /// Announcing and listening.
+    Running,
+    /// Started without discovery, by configuration.
+    Off,
+    /// Could not start. The engine still sends and receives.
+    Unavailable(String),
+}
+
 /// One item's result inside a finished transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemOutcome {
@@ -114,6 +128,23 @@ pub struct ItemOutcome {
     pub bytes: u64,
     /// Why it failed, in the receiver's words, if it did.
     pub error: Option<String>,
+}
+
+/// A short name for a whole send: the folder the files came out of, or the
+/// first file's name. Takes the first path segment so a folder send says
+/// "Q3 handover" instead of "Q3 handover/floorplan.pdf".
+fn send_label(targets: &[SendTarget]) -> String {
+    let Some(first) = targets.first() else {
+        return String::new();
+    };
+    if let Some(name) = &first.name {
+        return name.split('/').next().unwrap_or(name).to_owned();
+    }
+    first
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 impl ItemOutcome {
@@ -156,6 +187,10 @@ pub enum Event {
     TransferStarted {
         /// Which send.
         id: TransferId,
+        /// A short name for the whole send: the first file's name, or the
+        /// folder the files came out of. Shown before any progress exists, so
+        /// a lane can say what is moving instead of "preparing".
+        label: String,
         /// How many files it covers.
         files: usize,
         /// Total bytes declared by the local files.
@@ -269,6 +304,8 @@ struct Inner {
     addr: SocketAddr,
     root: PathBuf,
     pin: Option<String>,
+    /// Fixed at start: discovery either came up, was disabled, or failed.
+    discovery_state: DiscoveryState,
     events: broadcast::Sender<Event>,
     server: Mutex<Option<JoinHandle<()>>>,
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
@@ -317,18 +354,24 @@ impl Engine {
 
         let (events, _) = broadcast::channel(EVENT_BUFFER);
 
+        let mut discovery_state = DiscoveryState::Off;
         let discovery = match config.discovery {
             Some(mut discovery_config) => {
                 // The announce must carry the port actually bound, which is
                 // only known after the listener exists.
                 discovery_config.announce = true;
                 match Discovery::start(announce_for(&info), discovery_config).await {
-                    Ok(discovery) => Some(discovery),
+                    Ok(discovery) => {
+                        discovery_state = DiscoveryState::Running;
+                        Some(discovery)
+                    }
                     Err(err) => {
-                        log::warn!("discovery is unavailable: {err}");
+                        let reason = err.to_string();
+                        log::warn!("discovery is unavailable: {reason}");
                         let _ = events.send(Event::DiscoveryUnavailable {
-                            reason: err.to_string(),
+                            reason: reason.clone(),
                         });
+                        discovery_state = DiscoveryState::Unavailable(reason);
                         None
                     }
                 }
@@ -389,6 +432,7 @@ impl Engine {
                 addr,
                 root,
                 pin: config.pin,
+                discovery_state,
                 events,
                 server: Mutex::new(Some(server_task)),
                 shutdown: Mutex::new(Some(shutdown)),
@@ -416,6 +460,12 @@ impl Engine {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    /// What multicast discovery is doing.
+    #[must_use]
+    pub fn discovery(&self) -> &DiscoveryState {
+        &self.inner.discovery_state
     }
 
     /// Subscribe to events. Each subscriber gets its own backlog from this point.
@@ -485,6 +535,7 @@ impl Engine {
 
         let id = TransferId(self.inner.next_transfer.fetch_add(1, Ordering::Relaxed));
         let files = targets.len();
+        let label = send_label(&targets);
         let bytes: u64 = targets
             .iter()
             .filter_map(|target| std::fs::metadata(&target.path).ok())
@@ -530,6 +581,7 @@ impl Engine {
         let handle = tokio::spawn(async move {
             let _ = events.send(Event::TransferStarted {
                 id,
+                label,
                 files,
                 bytes,
                 peer: addr,

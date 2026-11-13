@@ -43,13 +43,15 @@ mod engine;
 mod targets;
 
 pub use engine::{
-    EVENT_BUFFER, Engine, EngineConfig, EngineError, Event, ItemOutcome, PeerView, TransferId,
+    DiscoveryState, EVENT_BUFFER, Engine, EngineConfig, EngineError, Event, ItemOutcome, PeerView,
+    TransferId,
 };
 pub use targets::{CollectError, Collected, collect_targets};
 
 pub use flit_api::{Info, PROTO_VERSION};
 pub use flit_client::SendTarget;
 pub use flit_crypto::{CryptoError, Identity};
+pub use flit_discovery::PeerSource;
 
 /// Build metadata reported by the engine and by `flit doctor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
