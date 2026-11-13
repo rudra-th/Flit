@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flit — send a folder across the room</title>
+    <meta
+      name="description"
+      content="Flit sends folders straight between two devices on your own network. No account, no cloud, and every file is hashed and verified before it gets its real name."
+    />
+    <meta name="theme-color" content="#f6f5f2" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link
+      rel="preload"
+      href="/fonts/poppins-latin-600-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/open-sans-latin-400-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/src/site.css" />
+    <script>
+      // Entrances only exist when script runs; without it the page is simply
+      // the finished page, which is also what reduced motion gets.
+      document.documentElement.classList.add("js");
+    </script>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#how">Skip to content</a>
+
+    <!-- The hero: one sentence, split by the interface. The pale jade stage is
+         the page's one flat colour field; everything after it sits on paper. -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-stage">
+        <header class="top">
+          <a class="mark" href="#top" aria-label="Flit, back to the top">
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 6.5 10 12l-6 5.5" />
+              <path d="M12.5 6.5 18.5 12l-6 5.5" opacity="0.55" />
+            </svg>
+            <span>Flit</span>
+          </a>
+
+          <nav class="top-nav" aria-label="Sections">
+            <a href="#how">How it works</a>
+            <a href="#speed">Speed</a>
+            <a href="#questions">Questions</a>
+          </nav>
+
+          <a class="btn btn-solid btn-sm" href="#get">Get Flit</a>
+        </header>
+
+        <h1 class="hero-line" id="hero-title">
+          <span class="hero-half start">Send a folder</span>
+          <span class="hero-half end">across the room.</span>
+        </h1>
+
+        <div class="reel" aria-hidden="true">
+          <div class="reel-track">
+            <figure class="reel-frame" data-ui>
+              <div class="ui-head">
+                <span class="ui-title">Nearby</span>
+                <span class="ui-count">3</span>
+                <span class="ui-head-note">choose one or more, then send</span>
+              </div>
+              <ul class="ui-devices">
+                <li class="ui-device">
+                  <span class="ui-who">
+                    <span class="ui-name">Studio PC</span>
+                    <span class="ui-meta">desktop · 192.168.1.24</span>
+                  </span>
+                  <span class="ui-badge">fox tidal wrench lemon</span>
+                </li>
+                <li class="ui-device is-chosen">
+                  <span class="ui-who">
+                    <span class="ui-name">Rhea – Pixel 9</span>
+                    <span class="ui-meta">phone · 192.168.1.31</span>
+                  </span>
+                  <span class="ui-badge">shell leaf bell grape</span>
+                </li>
+                <li class="ui-device">
+                  <span class="ui-who">
+                    <span class="ui-name">Attic NAS</span>
+                    <span class="ui-meta">headless · 192.168.1.7</span>
+                  </span>
+                  <span class="ui-badge">stone compass clip candle</span>
+                </li>
+              </ul>
+              <p class="ui-footnote">
+                Multicast blocked? The same devices are found by a scan of the
+                subnet.
+              </p>
+            </figure>
+
+            <figure class="reel-frame" data-ui>
+              <div class="ui-head">
+                <span class="ui-title">Transfers</span>
+                <span class="ui-head-note">2 running · 113 MB/s</span>
+              </div>
+
+              <div class="ui-lane">
+                <div class="ui-lane-top">
+                  <span class="ui-name">Q3 handover</span>
+                  <span class="ui-rest">+14 more</span>
+                  <span class="ui-rate">89 MB/s</span>
+                </div>
+                <div class="ui-bar"><span style="--v: 30%"></span></div>
+                <p class="ui-facts">
+                  <span>Rhea – Pixel 9</span>
+                  <span>2 of 15 files · 55 MB of 186.4 MB</span>
+                </p>
+              </div>
+
+              <div class="ui-lane">
+                <div class="ui-lane-top">
+                  <span class="ui-name">Q3 handover</span>
+                  <span class="ui-rest">+14 more</span>
+                  <span class="ui-rate">24 MB/s</span>
+                </div>
+                <div class="ui-bar"><span style="--v: 17%"></span></div>
+                <p class="ui-facts">
+                  <span>Attic NAS</span>
+                  <span>1 of 15 files · 31 MB of 186.4 MB</span>
+                </p>
+              </div>
+
+              <p class="ui-footnote">
+                The bar is the receiver's byte count, not a timer.
+              </p>
+            </figure>
+
+            <figure class="reel-frame" data-ui>
+              <div class="ui-head">
+                <span class="ui-title">Recent</span>
+                <span class="ui-count">3</span>
+                <span class="ui-head-note">Saved means hashed and renamed</span>
+              </div>
+
+              <div class="ui-recent">
+                <span class="ui-when">14:02</span>
+                <span class="ui-who-text">
+                  <span class="ui-name">Rhea – Pixel 9</span>
+                  <span class="ui-meta">15 files · 186.4 MB · 89 MB/s</span>
+                </span>
+                <span class="ui-ok">Saved</span>
+              </div>
+
+              <div class="ui-recent">
+                <span class="ui-when">13:41</span>
+                <span class="ui-who-text">
+                  <span class="ui-name">Attic NAS</span>
+                  <span class="ui-meta">15 files · 186.4 MB · 74 MB/s</span>
+                </span>
+                <span class="ui-ok">Saved</span>
+              </div>
+
+              <div class="ui-recent">
+                <span class="ui-when">12:58</span>
+                <span class="ui-who-text">
+                  <span class="ui-name">Studio PC</span>
+                  <span class="ui-meta">1 file · 4.2 MB · 61 MB/s</span>
+                </span>
+                <span class="ui-ok">Saved</span>
+              </div>
+
+              <p class="ui-footnote">
+                sha256 checked at the receiver, then installed under its real
+                name.
+              </p>
+            </figure>
+          </div>
+        </div>
+
+        <div class="hero-foot">
+          <p class="hero-sub">
+            No account, no cable, no cloud. Flit finds the other device on your
+            network, pins its key, and pushes the files straight across.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-solid" href="#get">Get Flit</a>
+            <a class="link" href="https://github.com/rudra-th/Flit"
+              >Read the source</a
+            >
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main>
+      <!-- 1. How it works: three exchanges, each a thing you do and the thing
+           the app answers with. Fragments are cropped states, not windows. -->
+      <section class="section how" id="how" aria-labelledby="how-title">
+        <div class="grid">
+          <h2 class="section-head col-4-9" id="how-title" data-reveal>
+            Three moves
+          </h2>
+
+          <ol class="exchanges">
+            <li class="exchange">
+              <div class="exchange-text col-4-9" data-reveal>
+                <p class="call-title">First, drop what you want to move.</p>
+
+                <div class="call drop" data-ui data-reveal>
+                  <div class="ui-head">
+                    <span class="ui-title">To send</span>
+                    <span class="ui-head-note">nothing yet</span>
+                  </div>
+                  <div class="ui-drop">
+                    <span class="ui-drop-mark" aria-hidden>
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M12 3v11" />
+                        <path d="m7.5 10 4.5 4.5L16.5 10" />
+                        <path d="M4 17.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1.5" />
+                      </svg>
+                    </span>
+                    <p>
+                      Drop files or folders anywhere in this window, or
+                      <strong>choose them</strong>.
+                    </p>
+                    <span class="ui-btn">Add files</span>
+                  </div>
+                </div>
+
+                <div class="response" data-ui data-reveal>
+                  <div class="ui-head">
+                    <span class="ui-title">To send</span>
+                    <span class="ui-count">1 item</span>
+                    <span class="ui-head-note">Clear</span>
+                  </div>
+                  <div class="ui-item">
+                    <span class="ui-item-name">Q3 handover</span>
+                    <span class="ui-meta">15 files · 186.4 MB</span>
+                  </div>
+                  <div class="ui-foot">
+                    <span class="ui-total">
+                      15 files <strong>186.4 MB</strong>
+                    </span>
+                    <span class="ui-btn is-off">Choose a device</span>
+                  </div>
+                </div>
+              </div>
+            </li>
+
+            <li class="exchange">
+              <div class="exchange-text col-4-9" data-reveal>
+                <p class="call-title">Then choose the screen in front of you.</p>
+
+                <div class="call" data-ui data-reveal>
+                  <div class="ui-device is-chosen">
+                    <span class="ui-who">
+                      <span class="ui-name">Rhea – Pixel 9</span>
+                      <span class="ui-meta">phone · 192.168.1.31</span>
+                    </span>
+                    <span class="ui-badge">shell leaf bell grape</span>
+                    <span class="ui-hint">Selected</span>
+                  </div>
+                </div>
+
+                <div class="response" data-ui data-reveal>
+                  <div class="ui-head">
+                    <span class="ui-title">Transfers</span>
+                    <span class="ui-head-note">1 running · 89 MB/s</span>
+                  </div>
+                  <div class="ui-lane">
+                    <div class="ui-lane-top">
+                      <span class="ui-name">Q3 handover</span>
+                      <span class="ui-rest">+14 more</span>
+                      <span class="ui-rate">89 MB/s</span>
+                    </div>
+                    <div class="ui-bar"><span style="--v: 30%"></span></div>
+                    <p class="ui-facts">
+                      <span>Rhea – Pixel 9</span>
+                      <span>2 of 15 files · 55 MB of 186.4 MB</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </li>
+
+            <li class="exchange">
+              <div class="exchange-text col-4-9" data-reveal>
+                <p class="call-title">Last, it lands under its real name.</p>
+
+                <div class="call" data-ui data-reveal>
+                  <div class="ui-head">
+                    <span class="ui-title">Transfers</span>
+                    <span class="ui-head-note">1 this session</span>
+                  </div>
+                  <div class="ui-lane is-done">
+                    <div class="ui-lane-top">
+                      <span class="ui-name">Q3 handover</span>
+                      <span class="ui-rest">+14 more</span>
+                      <span class="ui-rate">89 MB/s</span>
+                    </div>
+                    <div class="ui-bar"><span style="--v: 100%"></span></div>
+                    <p class="ui-facts">
+                      <span>Rhea – Pixel 9</span>
+                      <span>Saved · 2.1 s</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="result col-4-11" data-reveal>
+                <div class="receipt" data-ui>
+                  <div class="ui-head">
+                    <span class="ui-title">Recent</span>
+                    <span class="ui-head-note">Send again</span>
+                  </div>
+
+                  <div class="ui-history">
+                    <div class="ui-entry is-head" aria-hidden="true">
+                      <span class="ui-when">When</span>
+                      <span class="ui-entry-name">Device</span>
+                      <span class="ui-entry-nums">
+                        <span>Files</span><span>Size</span><span>Rate</span>
+                      </span>
+                      <span class="ui-ok">Result</span>
+                    </div>
+
+                    <div class="ui-entry">
+                      <span class="ui-when">14:02</span>
+                      <span class="ui-entry-name">Rhea – Pixel 9</span>
+                      <span class="ui-entry-nums">
+                        <span>15</span><span>186.4 MB</span><span>89 MB/s</span>
+                      </span>
+                      <span class="ui-ok">Saved</span>
+                    </div>
+
+                    <div class="ui-entry">
+                      <span class="ui-when">13:41</span>
+                      <span class="ui-entry-name">Attic NAS</span>
+                      <span class="ui-entry-nums">
+                        <span>15</span><span>186.4 MB</span><span>74 MB/s</span>
+                      </span>
+                      <span class="ui-ok">Saved</span>
+                    </div>
+
+                    <div class="ui-entry">
+                      <span class="ui-when">12:58</span>
+                      <span class="ui-entry-name">Studio PC</span>
+                      <span class="ui-entry-nums">
+                        <span>1</span><span>4.2 MB</span><span>61 MB/s</span>
+                      </span>
+                      <span class="ui-ok">Saved</span>
+                    </div>
+                  </div>
+                </div>
+                <p class="result-note">
+                  The receiver writes a <strong>.part</strong> file, hashes every
+                  byte as it arrives, and only then links it into place under its
+                  real name. A file whose sha256 disagrees is never installed.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- 2. Speed: the visitor's own number, from a stated formula. -->
+      <section class="section stats" id="speed" aria-labelledby="stats-title">
+        <div class="grid">
+          <h2 class="stats-question col-1-6" id="stats-title" data-reveal>
+            How big is the folder?
+          </h2>
+
+          <div class="control" data-ui data-reveal>
+            <div class="ui-head">
+              <span class="ui-title">Folder size</span>
+              <span class="ui-value"><output id="size-out" for="size">40 GiB</output></span>
+            </div>
+            <input
+              class="slider"
+              id="size"
+              type="range"
+              min="1"
+              max="100"
+              step="1"
+              value="40"
+              aria-label="Folder size in gibibytes"
+            />
+            <div class="ui-scale" aria-hidden="true">
+              <span>1 GiB</span>
+              <span>100 GiB</span>
+            </div>
+          </div>
+
+          <div class="stats-figure col-1-7" data-reveal>
+            <p class="figure" aria-live="polite">
+              <span class="figure-num" id="figure-num">390</span
+              ><span class="figure-unit">s</span>
+            </p>
+          </div>
+
+          <p class="stats-note col-8-12" data-reveal>
+            Size ÷ 105 MiB/s, the rate measured on a 100 GiB send over loopback.
+            A gigabit cable tops out near 118 MiB/s; Wi-Fi is usually a fraction
+            of it.
+          </p>
+        </div>
+      </section>
+
+      <!-- 3. Five promises, each answerable with a switch. -->
+      <section class="section bands" id="promises" aria-labelledby="bands-title">
+        <div class="bands-head grid">
+          <h2 class="section-head col-1-6" id="bands-title" data-reveal>
+            What it never does
+          </h2>
+          <p class="bands-lead col-7-12" data-reveal>
+            Five switches, not five settings: turn one on and it shows the part
+            of Flit that keeps the promise.
+          </p>
+        </div>
+
+        <div class="bands-list">
+          <div class="band" data-on="true">
+            <div class="band-in">
+              <p class="band-sentence" id="band-1">
+                It never asks for an account.
+              </p>
+              <p class="band-why" id="band-1-why">
+                No email, no sign-in, no cloud: two devices, two keys, and
+                nothing else on the wire.
+              </p>
+              <button
+                class="band-switch"
+                type="button"
+                role="switch"
+                aria-checked="true"
+                aria-labelledby="band-1-mech band-1"
+                aria-describedby="band-1-why"
+              >
+                <span class="band-knob" aria-hidden="true"></span>
+                <span class="sr-only" id="band-1-mech"
+                  >How it keeps this:</span
+                >
+              </button>
+            </div>
+          </div>
+
+          <div class="band">
+            <div class="band-in">
+              <p class="band-sentence" id="band-2">
+                It never gives a broken file its name.
+              </p>
+              <p class="band-why" id="band-2-why">
+                The receiver hashes sha256 while it writes, then installs. A
+                mismatch leaves the .part in place and says so.
+              </p>
+              <button
+                class="band-switch"
+                type="button"
+                role="switch"
+                aria-checked="false"
+                aria-labelledby="band-2-mech band-2"
+                aria-describedby="band-2-why"
+              >
+                <span class="band-knob" aria-hidden="true"></span>
+                <span class="sr-only" id="band-2-mech"
+                  >How it keeps this:</span
+                >
+              </button>
+            </div>
+          </div>
+
+          <div class="band">
+            <div class="band-in">
+              <p class="band-sentence" id="band-3">
+                It never trusts a key it has not pinned.
+              </p>
+              <p class="band-why" id="band-3-why">
+                First contact pins the fingerprint. If a device comes back with a
+                different key the send is refused, and there is no bypass to
+                click.
+              </p>
+              <button
+                class="band-switch"
+                type="button"
+                role="switch"
+                aria-checked="false"
+                aria-labelledby="band-3-mech band-3"
+                aria-describedby="band-3-why"
+              >
+                <span class="band-knob" aria-hidden="true"></span>
+                <span class="sr-only" id="band-3-mech"
+                  >How it keeps this:</span
+                >
+              </button>
+            </div>
+          </div>
+
+          <div class="band" data-on="true">
+            <div class="band-in">
+              <p class="band-sentence" id="band-4">
+                It never repeats what already arrived.
+              </p>
+              <p class="band-why" id="band-4-why">
+                A dropped send asks the receiver for the range it already holds,
+                so only the missing bytes cross the wire.
+              </p>
+              <button
+                class="band-switch"
+                type="button"
+                role="switch"
+                aria-checked="true"
+                aria-labelledby="band-4-mech band-4"
+                aria-describedby="band-4-why"
+              >
+                <span class="band-knob" aria-hidden="true"></span>
+                <span class="sr-only" id="band-4-mech"
+                  >How it keeps this:</span
+                >
+              </button>
+            </div>
+          </div>
+
+          <div class="band">
+            <div class="band-in">
+              <p class="band-sentence" id="band-5">It never needs the internet.</p>
+              <p class="band-why" id="band-5-why">
+                Discovery is a multicast announcement on the local network and
+                the transfer is one TLS connection between the two devices.
+                Nothing is relayed; unplug the wide area link and the send still
+                works.
+              </p>
+              <button
+                class="band-switch"
+                type="button"
+                role="switch"
+                aria-checked="false"
+                aria-labelledby="band-5-mech band-5"
+                aria-describedby="band-5-why"
+              >
+                <span class="band-knob" aria-hidden="true"></span>
+                <span class="sr-only" id="band-5-mech"
+                  >How it keeps this:</span
+                >
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Questions: a sticky heading and a stack of filled tiles. -->
+      <section class="section faq" id="questions" aria-labelledby="faq-title">
+        <div class="grid">
+          <h2 class="section-head faq-head col-1-4" id="faq-title" data-reveal>
+            Before you send
+          </h2>
+
+          <div class="faq-list col-5-12">
+            <details class="faq-tile" name="question" data-reveal open>
+              <summary>
+                <span class="faq-q">Do I need an account?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                No. There is no account, no sign-in and no server in the middle.
+                Two devices that can see each other on the network are enough.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">Where do my files go?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                Straight to the other device, over TLS 1.3, and nowhere else.
+                There is no relay and no copy kept for later, because there is no
+                server to keep it.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">Can it move a whole folder?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                Yes. Pick the folder and Flit lists its files, hashes them before
+                the manifest, and sends them as one batch with one progress lane
+                and one cancel.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">What happens if the Wi-Fi drops?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                The send picks up where it stopped. The receiver keeps the partial
+                file and reports the byte range it has, so the next attempt
+                carries only the rest.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">How do I know it is the right device?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                Every device has a key and a fingerprint, and the same four words
+                and four emoji sit on both screens. The key is pinned the first
+                time, and a device that comes back with a different one is
+                refused.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">Does it work across the internet?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                No, on purpose. V1 is for devices on the same network: there is no
+                relay, no hole punching, and no rented server in the path. A
+                typed address can cross a subnet; discovery never does.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">Is there an Android build?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                Not yet. Windows and Linux are the first targets and both build
+                today; Android is next. Nothing is downloadable until the
+                installer is done.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">Is it free?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                Yes. Flit is free software under MIT OR Apache-2.0, and the
+                source is on GitHub. No paid tier, no account to cancel, no usage
+                to meter.
+              </p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. The honest end of the funnel: nothing to download yet. -->
+      <section class="section get" id="get" aria-labelledby="get-title">
+        <div class="grid">
+          <div class="col-1-7">
+            <h2 class="section-head" id="get-title" data-reveal>
+              Nothing to download yet.
+            </h2>
+            <p class="get-body" data-reveal>
+              Flit is pre-alpha. The protocol, the engine and the desktop shell
+              are built and tested; the installer is not. When there is a build it
+              will be a release on GitHub — no email, no waitlist, no counter on
+              this page.
+            </p>
+            <div class="get-actions" data-reveal>
+              <a class="btn btn-solid" href="https://github.com/rudra-th/Flit"
+                >Watch the repository</a
+              >
+              <a
+                class="link"
+                href="https://github.com/rudra-th/Flit/releases"
+                >Releases</a
+              >
+            </div>
+          </div>
+
+          <div class="col-8-12">
+            <ul class="status">
+              <li data-reveal>
+                <span>Protocol and engine</span>
+                <span class="status-state">tested</span>
+              </li>
+              <li data-reveal>
+                <span>Desktop shell</span>
+                <span class="status-state">builds on Windows and Linux</span>
+              </li>
+              <li data-reveal>
+                <span>Installer</span>
+                <span class="status-state is-off">not yet</span>
+              </li>
+              <li data-reveal>
+                <span>Android</span>
+                <span class="status-state is-off">next</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer: two rows of filled tiles, every cell used. -->
+    <footer class="footer">
+      <div class="board">
+        <div class="tile tile-statement">
+          <p class="tile-sentence">
+            Files go device to device, over the network you already have.
+          </p>
+          <p class="tile-legal">
+            MIT OR Apache-2.0 · © 2026 Flit contributors · no cookies, no
+            analytics, no third-party requests.
+          </p>
+        </div>
+
+        <nav class="tile tile-nav" aria-label="Footer">
+          <ul>
+            <li><a href="#how">How it works</a></li>
+            <li><a href="#speed">Speed</a></li>
+            <li><a href="#questions">Questions</a></li>
+            <li><a href="https://github.com/rudra-th/Flit">Source</a></li>
+          </ul>
+        </nav>
+
+        <div class="tile tile-time">
+          <p class="tile-label">Your local time</p>
+          <p class="tile-clock" id="clock">--:--</p>
+          <p class="tile-zone" id="zone"></p>
+        </div>
+
+        <div class="tile tile-contact">
+          <p class="tile-label">Say something</p>
+          <a class="tile-mail" href="https://github.com/rudra-th/Flit/issues"
+            >github.com/rudra-th/Flit</a
+          >
+        </div>
+
+        <div class="tile tile-mark">
+          <span class="wordmark">Flit</span>
+        </div>
+
+        <a class="tile tile-go" href="https://github.com/rudra-th/Flit">
+          <span class="tile-go-text">Read the source</span>
+          <svg
+            class="tile-arrow"
+            width="40"
+            height="40"
+            viewBox="0 0 40 40"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M10 30 30 10" />
+            <path d="M15 10h15v15" />
+          </svg>
+        </a>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Flit">
+  <rect width="32" height="32" rx="7.4" fill="#0e7a5c" />
+  <g fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6.95 9.13 14.45 16 6.95 22.88" />
+    <path d="M17.58 9.13 25.08 16 17.58 22.88" opacity="0.55" />
+  </g>
+</svg>

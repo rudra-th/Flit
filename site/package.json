@@ -1,0 +1,14 @@
+{
+  "name": "flit-site",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 1421 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 1421 --strictPort"
+  },
+  "devDependencies": {
+    "vite": "^7.1.12"
+  }
+}
