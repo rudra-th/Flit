@@ -53,8 +53,16 @@ export function DeviceCard({
       type="button"
       className={lone ? "device single" : "device"}
       aria-pressed={selected}
-      aria-label={`${peer.alias}, ${deviceKind(peer.deviceType)} at ${peer.addr}. Choose as the destination.`}
-      title="Choose as the destination. Double-click sends now."
+      aria-label={`${peer.alias}, ${deviceKind(peer.deviceType)} at ${peer.addr}. ${
+        selected
+          ? "Chosen. Choose again to leave it out."
+          : "Choose as a destination."
+      }`}
+      title={
+        selected
+          ? "Chosen. Double-click sends to this device alone."
+          : "Choose as a destination. Double-click sends now."
+      }
       onClick={onSelect}
       onDoubleClick={onSend}
     >

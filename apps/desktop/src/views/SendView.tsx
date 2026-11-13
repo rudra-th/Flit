@@ -5,6 +5,7 @@ import { HistoryHead, HistoryRow } from "../components/HistoryRow";
 import { AlertIcon, PlusIcon } from "../components/Icons";
 import { Lane } from "../components/Lane";
 import { Tray } from "../components/Tray";
+import { rate } from "../lib/format";
 import type { HistoryEntry, Peer, Status, Transfer, TrayEntry } from "../lib/types";
 
 /** The screen answers one question first: where can this go, right now?
@@ -32,7 +33,7 @@ export function SendView({
 }: {
   status: Status | null;
   peers: Peer[];
-  selected: string | null;
+  selected: string[];
   tray: TrayEntry[];
   transfers: Transfer[];
   history: HistoryEntry[];
@@ -40,7 +41,7 @@ export function SendView({
   onAdd: () => void;
   onRemove: (path: string) => void;
   onClear: () => void;
-  onSend: (deviceId?: string) => void;
+  onSend: (deviceIds?: string[]) => void;
   onCancel: (id: number) => void;
   onResend: (entry: HistoryEntry) => void;
   onOpenHistory: () => void;
@@ -56,7 +57,13 @@ export function SendView({
   }, []);
 
   const running = transfers.filter((transfer) => transfer.state === "running");
-  const targetPeer = peers.find((peer) => peer.deviceId === selected) ?? null;
+  const chosen = peers.filter((peer) => selected.includes(peer.deviceId));
+  const target =
+    chosen.length === 1
+      ? chosen[0].alias
+      : chosen.length > 1
+        ? `${chosen.length} devices`
+        : null;
   const only = peers.length === 1 ? peers[0] : null;
   const discovery = status?.discovery;
 
@@ -102,7 +109,7 @@ export function SendView({
           Nearby
           <span className="count">{peers.length}</span>
           <span className="right">
-            {peers.length > 0 ? "choose a device, then send" : ""}
+            {peers.length > 0 ? "choose one or more, then send" : ""}
           </span>
         </div>
 
@@ -123,10 +130,10 @@ export function SendView({
               <DeviceCard
                 key={peer.deviceId}
                 peer={peer}
-                selected={peer.deviceId === selected}
+                selected={selected.includes(peer.deviceId)}
                 lone={only !== null}
                 onSelect={() => onSelect(peer.deviceId)}
-                onSend={() => onSend(peer.deviceId)}
+                onSend={() => onSend([peer.deviceId])}
               />
             ))}
           </div>
@@ -136,8 +143,8 @@ export function SendView({
       <div className="section-gap">
         <Tray
           entries={tray}
-          target={targetPeer?.alias ?? null}
-          canSend={targetPeer !== null}
+          target={target}
+          canSend={chosen.length > 0}
           onAdd={onAdd}
           onRemove={onRemove}
           onClear={onClear}
@@ -151,7 +158,11 @@ export function SendView({
             <span className="panel-title">Transfers</span>
             <span className="panel-meta">
               {running.length > 0
-                ? `${running.length} running`
+                ? `${running.length} running${
+                    running.length > 1
+                      ? ` · ${rate(running.reduce((sum, item) => sum + item.rate, 0))}`
+                      : ""
+                  }`
                 : `${transfers.length} this session`}
             </span>
           </div>

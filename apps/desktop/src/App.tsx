@@ -37,7 +37,7 @@ export default function App() {
   const [doctor, setDoctor] = useState<Doctor | null>(null);
   const [transfers, setTransfers] = useState<Record<number, Transfer>>({});
   const [tray, setTray] = useState<TrayEntry[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const [view, setView] = useState<View>(viewFromHash);
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -354,19 +354,32 @@ export default function App() {
   // choosing it is not a step the user should have to take.
   useEffect(() => {
     setSelected((current) => {
-      if (current !== null && peers[current]) return current;
-      return peerList.length === 1 ? peerList[0].deviceId : null;
+      const alive = current.filter((id) => peers[id] !== undefined);
+      // The same selection must keep its identity, or every announce would
+      // re-render the device list for nothing.
+      if (alive.length === current.length && alive.length > 0) return current;
+      return peerList.length === 1 ? [peerList[0].deviceId] : alive;
     });
   }, [peerList, peers]);
 
+  // Choosing is a toggle, because one send can go to several devices.
+  const toggle = useCallback((deviceId: string) => {
+    setSelected((current) =>
+      current.includes(deviceId)
+        ? current.filter((id) => id !== deviceId)
+        : [...current, deviceId],
+    );
+  }, []);
+
   const send = useCallback(
-    async (deviceId?: string) => {
+    async (deviceIds?: string[]) => {
       const live = bridgeRef.current;
       if (!live) return;
-      const targetId = deviceId ?? selectedRef.current;
-      const peer = targetId === null ? undefined : peersRef.current[targetId];
+      const targets = (deviceIds ?? selectedRef.current).filter(
+        (id) => peersRef.current[id] !== undefined,
+      );
       const items = trayRef.current;
-      if (!peer) {
+      if (targets.length === 0) {
         say("Choose a device first.", "bad");
         return;
       }
@@ -378,19 +391,52 @@ export default function App() {
       const paths = items.map((entry) => entry.path);
       const extra = paths.length - 1;
 
-      try {
-        const id = await live.sendToPeer(peer.deviceId, paths);
-        if (extra > 0) {
-          setTransfers((current) => {
-            const transfer = current[id];
-            if (!transfer) return current;
-            return { ...current, [id]: { ...transfer, extra } };
-          });
-        }
+      // One independent session per device. A device that packed up should not
+      // take the others down with it, and every session has its own lane.
+      const results = await Promise.allSettled(
+        targets.map(async (id) => {
+          const started = await live.sendToPeer(id, paths);
+          if (extra > 0) {
+            setTransfers((current) => {
+              const transfer = current[started];
+              if (!transfer) return current;
+              return { ...current, [started]: { ...transfer, extra } };
+            });
+          }
+        }),
+      );
+
+      const refused = results.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [
+              {
+                alias: peersRef.current[targets[index]]?.alias ?? targets[index],
+                error: describe(result.reason),
+              },
+            ]
+          : [],
+      );
+
+      if (refused.length === 0) {
         setTray([]);
-      } catch (error) {
-        say(describe(error), "bad");
+        return;
       }
+
+      // The tray keeps its files when a device refused: the ones that went
+      // already landed, and re-sending them would leave copies at the receiver.
+      if (refused.length === targets.length) {
+        say(
+          targets.length === 1
+            ? refused[0].error
+            : `Nothing left the machine. ${refused[0].alias}: ${refused[0].error}`,
+          "bad",
+        );
+        return;
+      }
+      say(
+        `Sent to ${targets.length - refused.length} of ${targets.length}. ${refused[0].alias}: ${refused[0].error}`,
+        "bad",
+      );
     },
     [say],
   );
@@ -422,8 +468,14 @@ export default function App() {
     })();
   }, []);
 
-  const targetAlias =
-    selected !== null ? (peers[selected]?.alias ?? null) : null;
+  // How the tray names where this is going: one name, or a count.
+  const chosen = peerList.filter((peer) => selected.includes(peer.deviceId));
+  const targetName =
+    chosen.length === 0
+      ? null
+      : chosen.length === 1
+        ? chosen[0].alias
+        : `${chosen.length} devices`;
 
   return (
     <div className="app">
@@ -438,7 +490,7 @@ export default function App() {
             tray={tray}
             transfers={Object.values(transfers)}
             history={history}
-            onSelect={setSelected}
+            onSelect={toggle}
             onAdd={() => {
               void (async () => {
                 const live = bridgeRef.current;
@@ -450,8 +502,8 @@ export default function App() {
               setTray((current) => current.filter((entry) => entry.path !== path))
             }
             onClear={() => setTray([])}
-            onSend={(deviceId) => {
-              void send(deviceId);
+            onSend={(deviceIds) => {
+              void send(deviceIds);
             }}
             onCancel={(id) => {
               void bridgeRef.current?.cancel(id);
@@ -483,9 +535,9 @@ export default function App() {
             <span>
               <strong>Drop to send</strong>
               <br />
-              {targetAlias === null
+              {targetName === null
                 ? "Then choose the device it goes to."
-                : `To ${targetAlias}.`}
+                : `To ${targetName}.`}
             </span>
           </div>
         </div>
