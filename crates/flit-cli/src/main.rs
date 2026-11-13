@@ -600,7 +600,10 @@ async fn send(
     let started = Instant::now();
 
     if let Some(text) = text {
-        let saved = match connection.send_text(text, name.unwrap_or("clipboard.txt")).await {
+        let saved = match connection
+            .send_text(text, name.unwrap_or("clipboard.txt"))
+            .await
+        {
             Ok(saved) => saved,
             Err(err) => {
                 eprintln!("flit: {err}");

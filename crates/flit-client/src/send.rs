@@ -160,9 +160,7 @@ impl Connection {
         }
 
         Ok(SavedFile {
-            saved_as: result
-                .saved_as
-                .unwrap_or_else(|| "unknown".to_string()),
+            saved_as: result.saved_as.unwrap_or_else(|| "unknown".to_string()),
             bytes: text.len() as u64,
         })
     }

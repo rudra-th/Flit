@@ -391,6 +391,10 @@ name = "flit-bench"
 version = "0.1.0"
 dependencies = [
  "flit-api",
+ "flit-client",
+ "flit-crypto",
+ "flit-server",
+ "tokio",
 ]
 
 [[package]]
@@ -400,6 +404,7 @@ dependencies = [
  "clap",
  "flit-api",
  "flit-client",
+ "flit-core",
  "flit-crypto",
  "flit-discovery",
  "flit-server",
@@ -439,6 +444,9 @@ dependencies = [
  "flit-discovery",
  "flit-server",
  "flit-storage",
+ "log",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
