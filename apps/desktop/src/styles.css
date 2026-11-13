@@ -204,7 +204,7 @@ button {
   background: var(--raised);
 }
 
-.tab[aria-selected="true"] {
+.tab[aria-current="page"] {
   color: var(--ink);
   background: var(--surface);
   border-color: var(--line);
@@ -214,7 +214,7 @@ button {
   color: var(--ink-3);
 }
 
-.tab[aria-selected="true"] svg {
+.tab[aria-current="page"] svg {
   color: var(--accent);
 }
 

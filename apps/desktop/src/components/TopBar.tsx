@@ -54,7 +54,7 @@ export function TopBar({
               key={item.id}
               type="button"
               className="tab"
-              aria-selected={view === item.id}
+              aria-current={view === item.id ? "page" : undefined}
               onClick={() => onChange(item.id)}
             >
               <Icon size={15} />
