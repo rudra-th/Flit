@@ -8,9 +8,10 @@ own network. No account, no cloud, no configuration.
 > sessions, and resume across a sender restart. A folder with ten thousand files
 > goes over in one session, every item is verified end to end before it gets its
 > real name, and re-running an interrupted send streams only the bytes the
-> receiver still needs. The engine facade (`flit-core`) is in place; the desktop
-> shell, the Android app and the browser page are still ahead. Nothing is usable
-> yet.
+> receiver still needs. The desktop window is built on the engine facade
+> (`flit-core`): nearby devices, drag and drop, live progress with a cancel, past
+> sends, and a network doctor. The Android app and the browser page are still
+> ahead.
 
 ---
 
@@ -56,6 +57,9 @@ crates/
   flit-core/       engine facade for every UI
   flit-cli/        headless binary: serve, send, doctor, identity
   flit-bench/      reproducible benchmarks
+apps/
+  desktop/         React 19 window: devices, send tray, history, doctor
+    src-tauri/     Tauri shell: engine host, commands, tray icon
 docs/
   protocol.md      normative wire specification
   benchmarks.md    measured numbers, method and known gaps
@@ -80,6 +84,33 @@ container without changing anything else:
 
 ```sh
 docker run --rm -v "$PWD:/work" -w /work rust:1.99-bookworm cargo test --workspace
+```
+
+## The desktop window
+
+```sh
+cd apps/desktop
+npm install
+npm run tauri dev
+```
+
+The window puts the devices on the network in front of you: drop files on it,
+pick a device, and the lane shows what has crossed the wire with a cancel beside
+it. Closing the window does not stop receiving — Flit stays in the tray, and
+quitting is a tray menu item, because a transfer app that stops listening the
+moment its window is dismissed is not doing its job.
+
+`npm run dev` opens the same window in a browser against a demo engine, which is
+how the design gets reviewed without a display. That demo code is compiled out of
+a release build; it is not reachable in a shipped binary.
+
+The Rust half is its own workspace so `cargo test --workspace` never needs
+webkit2gtk. To gate it, use the image that has the window libraries:
+
+```sh
+docker build -t flit-desktop-gate -f apps/desktop/gate.Dockerfile apps/desktop
+docker run --rm -v "$PWD:/src" -w /src/apps/desktop/src-tauri \
+  flit-desktop-gate cargo clippy --all-targets -- -D warnings
 ```
 
 ## Trying the transport
