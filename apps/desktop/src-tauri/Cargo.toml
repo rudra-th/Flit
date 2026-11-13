@@ -1,0 +1,28 @@
+[package]
+name = "flit-desktop"
+description = "Flit desktop shell: a small Tauri window over the engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Flit contributors"]
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+flit-api = { path = "../../../crates/flit-api" }
+flit-core = { path = "../../../crates/flit-core" }
+flit-crypto = { path = "../../../crates/flit-crypto" }
+if-addrs = "0.13"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["sync"] }
+
+# This shell is its own workspace so a Rust gate or CI job that only builds the
+# crates never needs webkit2gtk, and the engine never gains a UI dependency.
+[workspace]

@@ -9,3 +9,5 @@ Thumbs.db
 node_modules/
 dist/
 .taste-skill/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
