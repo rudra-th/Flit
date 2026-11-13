@@ -186,6 +186,13 @@ Use `--scan-port` when the receiver is not on the default 47821.
 network is shared and being visible is not wanted. A silent device can still
 send, it just cannot be found by discovery.
 
+## Security
+
+What Flit defends against, what it explicitly does not, and how to report a
+problem are in [`SECURITY.md`](SECURITY.md). Short version: pinned TLS 1.3,
+verified files, untrusted names; no audit yet, so compare the safety badge out
+of band the first time you trust a device.
+
 ## Licence
 
 MIT OR Apache-2.0, at your option.
