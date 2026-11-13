@@ -5,13 +5,13 @@ own network. No account, no cloud, no configuration.
 
 > **Status: pre-alpha.** The protocol is specified, and the engine works:
 > identity, path safety, the pinned TLS 1.3 transport, discovery, multi-file
-> sessions, and resume across a sender restart. A folder with ten thousand files
-> goes over in one session, every item is verified end to end before it gets its
-> real name, and re-running an interrupted send streams only the bytes the
-> receiver still needs. The desktop window is built on the engine facade
-> (`flit-core`): nearby devices, drag and drop, live progress with a cancel, past
-> sends, and a network doctor. The Android app and the browser page are still
-> ahead.
+> sessions, inline text items, and resume across a sender restart. A folder with
+> ten thousand files goes over in one session, every item is verified end to end
+> before it gets its real name, and re-running an interrupted send streams only
+> the bytes the receiver still needs. The desktop window is built on the engine
+> facade (`flit-core`): nearby devices, drag and drop, live progress with a
+> cancel, past sends, and a network doctor. The Android app and the browser page
+> are still ahead.
 
 **[getflit.surge.sh](https://getflit.surge.sh)** is the page that explains it: the
 three moves, a real size-to-time figure, and five promises you can switch off.
@@ -134,11 +134,20 @@ cargo run -p flit-cli -- send ./some-file.bin \
 # several files, or a whole folder, in one session
 cargo run -p flit-cli -- send notes.txt photos/ \
     --to 127.0.0.1:47821 --fingerprint <fingerprint from terminal 1>
+
+# a link or a note: the text itself, carried inline in the manifest
+cargo run -p flit-cli -- send --text "https://example.com/q3" \
+    --name q3-link.txt --to 127.0.0.1:47821 --fingerprint <fingerprint from terminal 1>
 ```
 
 A folder keeps its own name at the receiver: `send photos/` produces
 `recv/photos/…`, including subdirectories. Each file is hashed before anything
 is announced, and the sender prints one result per file plus a summary.
+
+`send --text` offers a string instead of a path. It travels inside the manifest,
+so there is no body to stream: the receiver hashes the UTF-8 bytes at commit,
+installs them under `--name` (default `clipboard.txt`), and the result is an
+ordinary file on the other side. An empty string is refused before dialling.
 
 A wrong fingerprint fails during the handshake, before any request is sent: that
 is the whole point of pinning the key inside the certificate.

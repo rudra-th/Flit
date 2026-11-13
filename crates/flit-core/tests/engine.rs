@@ -110,6 +110,44 @@ async fn a_send_between_two_engines_verifies_and_installs_the_file() {
 }
 
 #[tokio::test]
+async fn a_text_send_arrives_as_a_verified_file() {
+    let (receiver, receiver_root, receiver_identity) = start_engine(35, "text-receiver").await;
+    let (sender, sender_root, _) = start_engine(36, "text-sender").await;
+
+    let mut events = sender.subscribe();
+    let id = sender
+        .send_text_to(
+            receiver.addr(),
+            &receiver_identity.fingerprint(),
+            "https://example.com/q3".to_string(),
+            "clipboard.txt".to_string(),
+        )
+        .await
+        .expect("text send starts");
+
+    assert!(matches!(
+        terminal(&mut events).await,
+        Event::TransferFinished { id: finished, ref items }
+            if finished == id
+                && items.len() == 1
+                && items[0].name == "clipboard.txt"
+                && items[0].path.as_os_str().is_empty()
+                && items[0].saved_as.as_deref() == Some("clipboard.txt")
+                && items[0].error.is_none()
+    ));
+    assert_eq!(
+        std::fs::read_to_string(receiver_root.join("clipboard.txt")).unwrap(),
+        "https://example.com/q3"
+    );
+    assert_eq!(sender.running().await, Vec::new());
+
+    sender.stop().await;
+    receiver.stop().await;
+    std::fs::remove_dir_all(&receiver_root).ok();
+    std::fs::remove_dir_all(&sender_root).ok();
+}
+
+#[tokio::test]
 async fn a_wrong_fingerprint_fails_the_send_instead_of_sending() {
     let (receiver, receiver_root, _) = start_engine(33, "wrong-pin").await;
     let (sender, sender_root, _) = start_engine(34, "wrong-pin-src").await;
@@ -265,6 +303,19 @@ async fn sending_nothing_or_to_an_unknown_device_is_refused_before_any_work() {
     {
         Err(EngineError::NothingToSend) => {}
         other => panic!("expected NothingToSend, got {other:?}"),
+    }
+
+    match engine
+        .send_text_to(
+            SocketAddr::from(([127, 0, 0, 1], 9)),
+            "nope",
+            String::new(),
+            "clipboard.txt".to_string(),
+        )
+        .await
+    {
+        Err(EngineError::NothingToSend) => {}
+        other => panic!("expected NothingToSend for empty text, got {other:?}"),
     }
 
     let source = root.join("file.txt");

@@ -82,11 +82,14 @@ enum Command {
         #[arg(long)]
         no_announce: bool,
     },
-    /// Send one file to a pinned device.
+    /// Send files or a text note to a pinned device.
     Send {
         /// Files or folders to send.
-        #[arg(required = true, num_args = 1.., value_name = "PATH")]
+        #[arg(num_args = 0.., value_name = "PATH")]
         files: Vec<PathBuf>,
+        /// Send inline text instead of files: a link, a note, the clipboard.
+        #[arg(long, value_name = "TEXT")]
+        text: Option<String>,
         /// Peer address, e.g. 192.168.1.20:47821.
         #[arg(long, value_name = "ADDR")]
         to: SocketAddr,
@@ -162,11 +165,22 @@ async fn main() {
         }) => info(addr, &fingerprint, pin.as_deref()).await,
         Some(Command::Send {
             files,
+            text,
             to,
             fingerprint,
             name,
             pin,
-        }) => send(&files, to, &fingerprint, name.as_deref(), pin.as_deref()).await,
+        }) => {
+            send(
+                &files,
+                text.as_deref(),
+                to,
+                &fingerprint,
+                name.as_deref(),
+                pin.as_deref(),
+            )
+            .await
+        }
     };
     std::process::exit(code);
 }
@@ -526,30 +540,43 @@ async fn info(addr: SocketAddr, fingerprint: &str, pin: Option<&str>) -> i32 {
     0
 }
 
-/// `flit send`: one session, one or many files.
+/// `flit send`: one session, one or many files, or one text item.
 async fn send(
     files: &[PathBuf],
+    text: Option<&str>,
     addr: SocketAddr,
     fingerprint: &str,
     name: Option<&str>,
     pin: Option<&str>,
 ) -> i32 {
-    // The walk lives in the engine, not here: the desktop shell has to answer
-    // "what counts as sendable" exactly the same way.
-    let collected = match collect_targets(files, name) {
-        Ok(collected) => collected,
-        Err(err) => {
-            eprintln!("flit: {err}");
-            return 1;
-        }
-    };
-    if collected.skipped > 0 {
-        eprintln!(
-            "flit: skipped {} non-regular file(s) in the folder walk",
-            collected.skipped
-        );
+    if text.is_some() && !files.is_empty() {
+        eprintln!("flit: send files or text, not both");
+        return 2;
     }
-    let targets = collected.targets;
+
+    let targets = if text.is_some() {
+        Vec::new()
+    } else if files.is_empty() {
+        eprintln!("flit: nothing to send — give one or more paths, or --text");
+        return 2;
+    } else {
+        // The walk lives in the engine, not here: the desktop shell has to
+        // answer "what counts as sendable" exactly the same way.
+        let collected = match collect_targets(files, name) {
+            Ok(collected) => collected,
+            Err(err) => {
+                eprintln!("flit: {err}");
+                return 1;
+            }
+        };
+        if collected.skipped > 0 {
+            eprintln!(
+                "flit: skipped {} non-regular file(s) in the folder walk",
+                collected.skipped
+            );
+        }
+        collected.targets
+    };
 
     let mut client = match Client::new(addr, fingerprint) {
         Ok(client) => client,
@@ -571,6 +598,25 @@ async fn send(
     };
 
     let started = Instant::now();
+
+    if let Some(text) = text {
+        let saved = match connection.send_text(text, name.unwrap_or("clipboard.txt")).await {
+            Ok(saved) => saved,
+            Err(err) => {
+                eprintln!("flit: {err}");
+                return 1;
+            }
+        };
+        let elapsed = started.elapsed();
+        connection.close();
+        let seconds = elapsed.as_secs_f64();
+        println!(
+            "sent text -> {} ({} bytes) in {seconds:.2}s, verified",
+            saved.saved_as, saved.bytes
+        );
+        return 0;
+    }
+
     let results = connection.send_files(&targets).await;
     let elapsed = started.elapsed();
     connection.close();

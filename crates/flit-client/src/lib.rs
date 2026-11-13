@@ -128,6 +128,9 @@ pub enum ClientError {
     /// The receiver's hash did not match; nothing was saved.
     #[error("the receiver could not verify the file, so it was not saved")]
     NotVerified,
+    /// An inline text item was handed over with no text in it.
+    #[error("there is no text to send")]
+    EmptyText,
     /// A dial did not finish within its deadline.
     #[error("{addr} did not answer within {}ms", after.as_millis())]
     Timeout {

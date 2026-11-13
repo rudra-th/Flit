@@ -21,7 +21,7 @@ use std::{
 };
 
 use flit_api::{DeviceType, Info};
-use flit_client::{Client, ClientError, FileOutcome, SendProgress, SendTarget};
+use flit_client::{Client, ClientError, FileOutcome, SavedFile, SendProgress, SendTarget};
 use flit_crypto::{Badge, Identity, badge_of};
 use flit_discovery::{Discovery, DiscoveryConfig, Peer, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig, ServerError};
@@ -118,7 +118,7 @@ pub enum DiscoveryState {
 /// One item's result inside a finished transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemOutcome {
-    /// Local file that was offered.
+    /// Local file that was offered; empty for an inline text item.
     pub path: PathBuf,
     /// Name the receiver was asked to save it as.
     pub name: String,
@@ -164,6 +164,18 @@ impl ItemOutcome {
                 bytes: 0,
                 error: Some(err.to_string()),
             },
+        }
+    }
+
+    /// An inline text item has no local file; its name is the only thing the
+    /// lane can show before it lands.
+    fn from_text(name: &str, saved: SavedFile) -> Self {
+        Self {
+            path: PathBuf::new(),
+            name: name.to_owned(),
+            saved_as: Some(saved.saved_as),
+            bytes: saved.bytes,
+            error: None,
         }
     }
 }
@@ -321,6 +333,41 @@ struct Running {
     /// Shared with the send task: cancelling reads and writes these counters,
     /// so no message has to reach a blocked socket.
     progress: SendProgress,
+}
+
+/// What a send carries, fixed before it starts.
+///
+/// Two shapes rather than one optional field: a file send reads local paths
+/// while it streams, and a text item is already in the manifest. Keeping them
+/// apart means the task never has to ask "which kind is this" mid-flight.
+enum Content {
+    /// Local files, one session.
+    Files(Vec<SendTarget>),
+    /// One inline note, link or clipboard payload, saved under `name`.
+    Text {
+        /// The payload itself, UTF-8.
+        text: String,
+        /// File name the receiver should give it.
+        name: String,
+    },
+}
+
+impl Content {
+    /// The lane label, item count and declared bytes, before any work.
+    fn totals(&self) -> (String, usize, u64) {
+        match self {
+            Self::Files(targets) => (
+                send_label(targets),
+                targets.len(),
+                targets
+                    .iter()
+                    .filter_map(|target| std::fs::metadata(&target.path).ok())
+                    .map(|metadata| metadata.len())
+                    .sum(),
+            ),
+            Self::Text { text, name } => (name.clone(), 1, text.len() as u64),
+        }
+    }
 }
 
 impl Engine {
@@ -497,19 +544,36 @@ impl Engine {
         peers
     }
 
+    /// Find one visible device by id.
+    async fn peer(&self, device_id: &str) -> Result<PeerView, EngineError> {
+        self.peers()
+            .await
+            .into_iter()
+            .find(|peer| peer.device_id == device_id)
+            .ok_or_else(|| EngineError::UnknownPeer(device_id.to_string()))
+    }
+
     /// Send files to one device from the peer list.
     pub async fn send_to_peer(
         &self,
         device_id: &str,
         targets: Vec<SendTarget>,
     ) -> Result<TransferId, EngineError> {
-        let peer = self
-            .peers()
-            .await
-            .into_iter()
-            .find(|peer| peer.device_id == device_id)
-            .ok_or_else(|| EngineError::UnknownPeer(device_id.to_string()))?;
+        let peer = self.peer(device_id).await?;
         self.send_to(peer.addr, &peer.fingerprint, targets).await
+    }
+
+    /// Send one text item — a link, a note, the clipboard — to a device from
+    /// the peer list.
+    pub async fn send_text_to_peer(
+        &self,
+        device_id: &str,
+        text: String,
+        name: String,
+    ) -> Result<TransferId, EngineError> {
+        let peer = self.peer(device_id).await?;
+        self.send_text_to(peer.addr, &peer.fingerprint, text, name)
+            .await
     }
 
     /// Send files to an address and a fingerprint, without discovery.
@@ -525,7 +589,37 @@ impl Engine {
         if targets.is_empty() {
             return Err(EngineError::NothingToSend);
         }
+        self.begin_send(addr, fingerprint, Content::Files(targets))
+            .await
+    }
 
+    /// Send one inline text item to an address and a fingerprint.
+    ///
+    /// The same manual path as [`Engine::send_to`], for a sentence, a link or
+    /// whatever was on the clipboard. The receiver saves it under `name`, so
+    /// the caller should pass a name that reads well as a file
+    /// (`clipboard.txt`), not a label.
+    pub async fn send_text_to(
+        &self,
+        addr: SocketAddr,
+        fingerprint: &str,
+        text: String,
+        name: String,
+    ) -> Result<TransferId, EngineError> {
+        if text.is_empty() || name.is_empty() {
+            return Err(EngineError::NothingToSend);
+        }
+        self.begin_send(addr, fingerprint, Content::Text { text, name })
+            .await
+    }
+
+    /// Hand one send to the network and return its id before it connects.
+    async fn begin_send(
+        &self,
+        addr: SocketAddr,
+        fingerprint: &str,
+        content: Content,
+    ) -> Result<TransferId, EngineError> {
         // Build the client here so a malformed fingerprint fails the call
         // instead of becoming an event nobody is watching yet.
         let mut client = Client::new(addr, fingerprint)?;
@@ -534,13 +628,7 @@ impl Engine {
         }
 
         let id = TransferId(self.inner.next_transfer.fetch_add(1, Ordering::Relaxed));
-        let files = targets.len();
-        let label = send_label(&targets);
-        let bytes: u64 = targets
-            .iter()
-            .filter_map(|target| std::fs::metadata(&target.path).ok())
-            .map(|metadata| metadata.len())
-            .sum();
+        let (label, files, bytes) = content.totals();
         let events = self.inner.events.clone();
         let progress = SendProgress::new();
         progress.set_totals(bytes, files);
@@ -599,7 +687,21 @@ impl Engine {
                     return;
                 }
             };
-            let result = connection.send_files_with(&targets, Some(&sending)).await;
+            let result: Result<Vec<ItemOutcome>, ClientError> = match content {
+                Content::Files(targets) => connection
+                    .send_files_with(&targets, Some(&sending))
+                    .await
+                    .map(|outcomes| {
+                        outcomes
+                            .into_iter()
+                            .map(ItemOutcome::from_file_outcome)
+                            .collect()
+                    }),
+                Content::Text { text, name } => connection
+                    .send_text(&text, &name)
+                    .await
+                    .map(|saved| vec![ItemOutcome::from_text(&name, saved)]),
+            };
             connection.close();
 
             // No progress may follow a terminal event, or a UI shows a bar
@@ -608,11 +710,7 @@ impl Engine {
             ticker.abort();
 
             match result {
-                Ok(outcomes) => {
-                    let items = outcomes
-                        .into_iter()
-                        .map(ItemOutcome::from_file_outcome)
-                        .collect();
+                Ok(items) => {
                     let _ = events.send(Event::TransferFinished { id, items });
                 }
                 Err(ClientError::Cancelled) => {

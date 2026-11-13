@@ -305,6 +305,11 @@ Prepare a session. The body is a **streamed NDJSON manifest**: one
 {"id":"a3","name":"clipboard.txt","kind":"text","text":"https://example.com"}
 ```
 
+A `text` item carries its payload in the manifest itself: `size` is zero and
+`sha256` is taken over the UTF-8 bytes. It is validated with the rest of the
+manifest, written at commit, and needs no `PUT`; from then on it is an ordinary
+file, verified and installed like any other.
+
 Response `201`:
 
 ```json

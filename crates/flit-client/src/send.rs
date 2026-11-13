@@ -122,6 +122,51 @@ impl Connection {
         self.send_files_with(targets, None).await
     }
 
+    /// Send one inline text item — a link, a note, the clipboard.
+    ///
+    /// The payload travels inside the manifest, so there is no body to stream
+    /// and nothing to resume: the receiver hashes the text it was given at
+    /// commit time and installs it under `name`. The result is an ordinary
+    /// file on the other side, which can be opened, copied or deleted like any
+    /// other. An empty text or name is refused before any connection work.
+    pub async fn send_text(&mut self, text: &str, name: &str) -> Result<SavedFile, ClientError> {
+        if text.is_empty() {
+            return Err(ClientError::EmptyText);
+        }
+        if name.is_empty() {
+            return Err(ClientError::Decode("a text item needs a name".into()));
+        }
+
+        let item = text_item(0, text, name);
+        let session = self.prepare(std::slice::from_ref(&item)).await?;
+        if !session.accepted.contains(&item.id) {
+            let reason = session
+                .rejected
+                .first()
+                .map(|rejected| rejected.reason)
+                .unwrap_or(ErrorCode::BadRequest);
+            return Err(ClientError::Rejected(reason));
+        }
+
+        let results = self
+            .finish(&session.session_id, std::slice::from_ref(&item.id))
+            .await?;
+        let result = results
+            .into_iter()
+            .find(|result| result.id == item.id)
+            .ok_or_else(|| ClientError::Decode("receiver forgot the text item".into()))?;
+        if !result.verified {
+            return Err(ClientError::NotVerified);
+        }
+
+        Ok(SavedFile {
+            saved_as: result
+                .saved_as
+                .unwrap_or_else(|| "unknown".to_string()),
+            bytes: text.len() as u64,
+        })
+    }
+
     /// Send several files in one session, reporting live progress.
     ///
     /// `progress` is updated as bytes leave and as items get a result, so a UI
@@ -659,6 +704,20 @@ fn offered_name(target: &SendTarget) -> String {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| target.path.display().to_string())
+}
+
+/// Describe one inline text item: no length, zero bytes to stream, and the
+/// hash taken over the UTF-8 payload the receiver will write.
+fn text_item(index: usize, text: &str, name: &str) -> ManifestItem {
+    ManifestItem {
+        id: format!("t{}", index + 1),
+        name: name.to_owned(),
+        size: 0,
+        sha256: hex::encode(Sha256::digest(text.as_bytes())),
+        mtime: None,
+        kind: ItemKind::Text,
+        text: Some(text.to_owned()),
+    }
 }
 
 /// Hash and describe one file, with its id derived from its place in the batch.
