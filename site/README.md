@@ -8,7 +8,7 @@ there is anything to download.
 site/
   index.html          the page: hero, three exchanges, figure, five bands, questions, get, board
   src/site.css        the app's tokens, the fragments, the layout, the motion
-  src/main.js         the reel, the slider, the switches, the entrances, the clock
+  src/main.js         the hero scene, the figure, the switches, the entrances, the clock
   public/fonts/       Poppins 500/600, Open Sans 400/600 + their licences
   public/favicon.svg  the two-chevron mark on jade
 ```
@@ -22,7 +22,7 @@ npm run build    # writes dist/
 npm run preview  # serves dist/ on 1421
 ```
 
-`dist/` is what ships: ~31 kB of HTML, ~21 kB of CSS, ~3 kB of JS, plus four
+`dist/` is what ships: ~31 kB of HTML, ~26 kB of CSS, ~5 kB of JS, plus four
 woff2 files. No client framework, no router, no analytics, no cookie.
 
 ## What drives it
@@ -46,9 +46,24 @@ the app, the "three moves" are written as calls (what you do) and responses
 
 ### The live parts
 
-- **Hero reel** — the sentence holds while three fragments (Nearby, Transfers,
-  Recent) pass through the gap between its halves, one step per screen of
-  scroll. Decoration only; the fragments are drawn in DOM, not screenshots.
+- **The hero scene** — one performance driven by one scroll number. A cover
+  line ("Two devices, one room.") holds the first screen; scrolling fades it and
+  brings "Send a folder / across the room." in from the two edges, opens a
+  window between the halves, then runs three fragments (Nearby, Transfers,
+  Recent) through it, holding each state for a beat before the next. It scrubs
+  backwards as willingly as forwards; nothing captures the wheel. Decoration
+  only, and the fragments are drawn in DOM, not screenshots.
+- **The phone hero** — the same beats in one column: the cover, the two halves
+  of the sentence stacked and sliding in from the sides, then the window opening
+  under them and holding the same three states. A phone gets 320 svh of scene
+  instead of the desk's 380, and the sentence keeps one `<h1>` box (so its line
+  breaks and its accessible name survive) rather than being split around the
+  frame.
+- **Three moves** — on a wide screen the section holds still for 220 svh while
+  each column's answer arrives in turn, its bars and the shared rail filling
+  with it. Stacked, the pin is dropped and each column scrubs on its own as it
+  reaches the reader. Both are scroll-*driven*: stop anywhere and the scene
+  stops with you.
 - **The figure** — a real slider from 1 to 100 GiB. Seconds = size × 1024 ÷ 105,
   the measured 100 GiB loopback rate from `docs/benchmarks.md`, and the page
   says the formula next to the number.
@@ -79,11 +94,13 @@ reason:
    `192.168.1.31` and `89 MB/s` in a mono face; on a marketing page mono outside
    `<code>` is a gate failure. Two faces only: Poppins for display, Open Sans for
    everything else, `font-variant-numeric: tabular-nums` so rates align.
-4. **The reel stacks below 1040px.** The blueprint wants the strip between the
-   halves of an `<h1>` at every width. On a phone that breaks the heading's
-   semantics and its line breaks, so the sentence comes first, then the three
-   fragments at content height, then the supporting line. The pinned story is a
-   desktop gesture; on a phone the same order is simply read.
+4. **The phone keeps one sentence box, above the window.** The blueprint wants
+   the strip between the halves of an `<h1>` at every width. On a phone that
+   would break the heading's box, its line breaks and its accessible name, so
+   the two halves stack above the frame as one `<h1>` and slide in from the
+   sides while the frame opens below them. Between 861 and 1040 px the scene
+   drops altogether (the sentence is simply read beside the frames), and a short
+   landscape phone keeps that static version too.
 5. **The bands are a value ladder, not five colours.** Off is the page ground and
    `--ink-2`. On fills with one step of the accent's own scale (five steps, one
    hue), with the mechanism text appearing under the sentence.
@@ -106,6 +123,11 @@ reason:
 11. **The open question is a deeper jade.** White on the button's `#0e7a5c` is
     5.3:1; the open tile takes `#0a6350`, so its answer clears 7:1 without adding
     a hue. It also keeps the filled tile distinct from the page's buttons.
+12. **The speed figure is one panel, not an open field.** The blueprint puts the
+    control under the question on the page ground. Here question, control (top
+    right) and figure (bottom left) share one white panel, so the section reads
+    as one instrument: set a size, watch the figure answer. The slider fills its
+    track up to the thumb, so the size is legible from the track alone.
 
 ## Copy deck
 
@@ -114,9 +136,10 @@ reason:
   straight across."
 - Three moves: *First, drop what you want to move.* / *Then choose the screen in
   front of you.* / *Last, it lands under its real name.*
-- The figure: *How big is the folder?* — "Size ÷ 105 MiB/s, the rate measured on a
+- The figure: *How big is the file?* — "Size ÷ 105 MiB/s, the rate measured on a
   100 GiB send over loopback. A gigabit cable tops out near 118 MiB/s; Wi-Fi is
-  usually a fraction of it."
+  usually a fraction of it." The slider runs 1–100 GiB; the label reads the
+  value in GiB.
 - Five promises: *What it never does* — never asks for an account · never gives a
   broken file its name · never trusts a key it has not pinned · never repeats what
   already arrived · never needs the internet.
@@ -135,17 +158,22 @@ Run before committing, against the production build:
 npm run build
 npm run preview -- --port 1422 &
 node ~/.agents/skills/design-taste-frontend/scripts/inspect.mjs \
-  http://localhost:1422/ --widths 1440,768,390 --film
+  http://localhost:1422/ --out .taste-skill/inspect-final \
+  --widths 1440,768,390 --film
 ```
+
+`--film` photographs the scroll a third of a screen at a time with real wheel
+input, so the hero and the pinned "Three moves" are judged on their in-between
+states, not just their rest states.
 
 Current result: **0 FAIL, 4 WARN**.
 
 | Warning | Why it stands |
 | --- | --- |
 | `palette-cream` | `#f6f5f2` is the app's own ground token, not a decorative cream; the palette is kept from the brand by direction. |
-| `size-count` | 15 sizes because the interface fragments are true to the app's UI scale (12–14 px) while the page runs on a five-step display scale. |
-| `no-real-pictures` | Deliberate: the subject's world is the interface, and no third-party image may be embedded. |
-| `no-footage` | Same reason; a clip would have to be filmed by us, not licensed. |
+| `size-count` | 16 sizes because the interface fragments are true to the app's UI scale (12–14 px) while the page runs on a five-step display scale. |
+| `no-footage` | No clip fits and none may be licensed: the subject's world is the interface, and the fragments are drawn in DOM. |
+| `long-pin` | The hero sentence and the "Three moves" heading each hold for four screens, but every screen changes what is under them: the cover hands to the sentence, the window opens, three states pass through, then three columns answer in turn. That is the rule's own remedy, not a defence. |
 
 ## House rules this page obeys
 

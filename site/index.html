@@ -29,6 +29,12 @@
       // Entrances only exist when script runs; without it the page is simply
       // the finished page, which is also what reduced motion gets.
       document.documentElement.classList.add("js");
+
+      // The cover holds the first screen, so a module that never arrives must
+      // not hold it for ever. Two seconds, then the still page.
+      window.setTimeout(function () {
+        if (!window.__flitReady) document.documentElement.classList.remove("js");
+      }, 2000);
     </script>
     <script type="module" src="/src/main.js"></script>
   </head>
@@ -66,6 +72,18 @@
 
           <a class="btn btn-solid btn-sm" href="#get">Get Flit</a>
         </header>
+
+        <!-- The cover: the room before the sentence. It leaves as the sentence
+             arrives. A phone gets it as a plain block above the sentence. -->
+        <div class="intro">
+          <p class="intro-line">Two devices,<br />one room.</p>
+          <div class="intro-foot">
+            <span class="intro-cue">Scroll</span>
+            <span class="intro-track" aria-hidden="true">
+              <span class="intro-dot"></span>
+            </span>
+          </div>
+        </div>
 
         <h1 class="hero-line" id="hero-title">
           <span class="hero-half start">Send a folder</span>
@@ -121,7 +139,7 @@
                   <span class="ui-rest">+14 more</span>
                   <span class="ui-rate">89 MB/s</span>
                 </div>
-                <div class="ui-bar"><span style="--v: 30%"></span></div>
+                <div class="ui-bar"><span style="--v: 0.3"></span></div>
                 <p class="ui-facts">
                   <span>Rhea – Pixel 9</span>
                   <span>2 of 15 files · 55 MB of 186.4 MB</span>
@@ -134,7 +152,7 @@
                   <span class="ui-rest">+14 more</span>
                   <span class="ui-rate">24 MB/s</span>
                 </div>
-                <div class="ui-bar"><span style="--v: 17%"></span></div>
+                <div class="ui-bar"><span style="--v: 0.17"></span></div>
                 <p class="ui-facts">
                   <span>Attic NAS</span>
                   <span>1 of 15 files · 31 MB of 186.4 MB</span>
@@ -208,14 +226,19 @@
            the app answers with. Fragments are cropped states, not windows. -->
       <section class="section how" id="how" aria-labelledby="how-title">
         <div class="grid">
-          <h2 class="section-head col-4-9" id="how-title" data-reveal>
-            Three moves
-          </h2>
+          <div class="how-head">
+            <h2 class="section-head" id="how-title" data-reveal>Three moves</h2>
+            <div class="how-rail" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
 
           <ol class="exchanges">
             <li class="exchange">
-              <div class="exchange-text col-4-9" data-reveal>
-                <p class="call-title">First, drop what you want to move.</p>
+              <div class="exchange-text">
+                <p class="call-title" data-reveal>
+                  First, drop what you want to move.
+                </p>
 
                 <div class="call drop" data-ui data-reveal>
                   <div class="ui-head">
@@ -247,7 +270,7 @@
                   </div>
                 </div>
 
-                <div class="response" data-ui data-reveal>
+                <div class="response" data-ui>
                   <div class="ui-head">
                     <span class="ui-title">To send</span>
                     <span class="ui-count">1 item</span>
@@ -268,8 +291,10 @@
             </li>
 
             <li class="exchange">
-              <div class="exchange-text col-4-9" data-reveal>
-                <p class="call-title">Then choose the screen in front of you.</p>
+              <div class="exchange-text">
+                <p class="call-title" data-reveal>
+                  Then choose the screen in front of you.
+                </p>
 
                 <div class="call" data-ui data-reveal>
                   <div class="ui-device is-chosen">
@@ -282,7 +307,7 @@
                   </div>
                 </div>
 
-                <div class="response" data-ui data-reveal>
+                <div class="response" data-ui>
                   <div class="ui-head">
                     <span class="ui-title">Transfers</span>
                     <span class="ui-head-note">1 running · 89 MB/s</span>
@@ -293,7 +318,7 @@
                       <span class="ui-rest">+14 more</span>
                       <span class="ui-rate">89 MB/s</span>
                     </div>
-                    <div class="ui-bar"><span style="--v: 30%"></span></div>
+                    <div class="ui-bar"><span style="--v: 0.3"></span></div>
                     <p class="ui-facts">
                       <span>Rhea – Pixel 9</span>
                       <span>2 of 15 files · 55 MB of 186.4 MB</span>
@@ -304,8 +329,10 @@
             </li>
 
             <li class="exchange">
-              <div class="exchange-text col-4-9" data-reveal>
-                <p class="call-title">Last, it lands under its real name.</p>
+              <div class="exchange-text">
+                <p class="call-title" data-reveal>
+                  Last, it lands under its real name.
+                </p>
 
                 <div class="call" data-ui data-reveal>
                   <div class="ui-head">
@@ -318,111 +345,95 @@
                       <span class="ui-rest">+14 more</span>
                       <span class="ui-rate">89 MB/s</span>
                     </div>
-                    <div class="ui-bar"><span style="--v: 100%"></span></div>
+                    <div class="ui-bar"><span style="--v: 1"></span></div>
                     <p class="ui-facts">
                       <span>Rhea – Pixel 9</span>
                       <span>Saved · 2.1 s</span>
                     </p>
                   </div>
                 </div>
-              </div>
 
-              <div class="result col-4-11" data-reveal>
-                <div class="receipt" data-ui>
+                <div class="response" data-ui>
                   <div class="ui-head">
                     <span class="ui-title">Recent</span>
-                    <span class="ui-head-note">Send again</span>
+                    <span class="ui-head-note">Saved means hashed and renamed</span>
                   </div>
 
-                  <div class="ui-history">
-                    <div class="ui-entry is-head" aria-hidden="true">
-                      <span class="ui-when">When</span>
-                      <span class="ui-entry-name">Device</span>
-                      <span class="ui-entry-nums">
-                        <span>Files</span><span>Size</span><span>Rate</span>
-                      </span>
-                      <span class="ui-ok">Result</span>
-                    </div>
+                  <div class="ui-recent">
+                    <span class="ui-when">14:02</span>
+                    <span class="ui-who-text">
+                      <span class="ui-name">Rhea – Pixel 9</span>
+                      <span class="ui-meta">15 files · 186.4 MB · 89 MB/s</span>
+                    </span>
+                    <span class="ui-ok">Saved</span>
+                  </div>
 
-                    <div class="ui-entry">
-                      <span class="ui-when">14:02</span>
-                      <span class="ui-entry-name">Rhea – Pixel 9</span>
-                      <span class="ui-entry-nums">
-                        <span>15</span><span>186.4 MB</span><span>89 MB/s</span>
-                      </span>
-                      <span class="ui-ok">Saved</span>
-                    </div>
-
-                    <div class="ui-entry">
-                      <span class="ui-when">13:41</span>
-                      <span class="ui-entry-name">Attic NAS</span>
-                      <span class="ui-entry-nums">
-                        <span>15</span><span>186.4 MB</span><span>74 MB/s</span>
-                      </span>
-                      <span class="ui-ok">Saved</span>
-                    </div>
-
-                    <div class="ui-entry">
-                      <span class="ui-when">12:58</span>
-                      <span class="ui-entry-name">Studio PC</span>
-                      <span class="ui-entry-nums">
-                        <span>1</span><span>4.2 MB</span><span>61 MB/s</span>
-                      </span>
-                      <span class="ui-ok">Saved</span>
-                    </div>
+                  <div class="ui-recent">
+                    <span class="ui-when">13:41</span>
+                    <span class="ui-who-text">
+                      <span class="ui-name">Attic NAS</span>
+                      <span class="ui-meta">15 files · 186.4 MB · 74 MB/s</span>
+                    </span>
+                    <span class="ui-ok">Saved</span>
                   </div>
                 </div>
-                <p class="result-note">
-                  The receiver writes a <strong>.part</strong> file, hashes every
-                  byte as it arrives, and only then links it into place under its
-                  real name. A file whose sha256 disagrees is never installed.
-                </p>
               </div>
             </li>
           </ol>
+
+          <p class="how-note" data-reveal>
+            The receiver writes a <strong>.part</strong> file, hashes every byte
+            as it arrives, and only then links it into place under its real name.
+            A file whose sha256 disagrees is never installed.
+          </p>
         </div>
       </section>
 
-      <!-- 2. Speed: the visitor's own number, from a stated formula. -->
+      <!-- 2. Speed: the visitor's own number, from a stated formula. One
+           instrument, on one panel. -->
       <section class="section stats" id="speed" aria-labelledby="stats-title">
         <div class="grid">
-          <h2 class="stats-question col-1-6" id="stats-title" data-reveal>
-            How big is the folder?
-          </h2>
+          <div class="stats-panel">
+            <h2 class="stats-question" id="stats-title" data-reveal>
+              How big is the file?
+            </h2>
 
-          <div class="control" data-ui data-reveal>
-            <div class="ui-head">
-              <span class="ui-title">Folder size</span>
-              <span class="ui-value"><output id="size-out" for="size">40 GiB</output></span>
+            <div class="control" data-ui data-reveal>
+              <div class="ui-head">
+                <span class="ui-title">File size</span>
+                <span class="ui-value"
+                  ><output id="size-out" for="size">40 GiB</output></span
+                >
+              </div>
+              <input
+                class="slider"
+                id="size"
+                type="range"
+                min="1"
+                max="100"
+                step="1"
+                value="40"
+                aria-label="File size in gibibytes"
+              />
+              <div class="ui-scale" aria-hidden="true">
+                <span>1 GiB</span>
+                <span>100 GiB</span>
+              </div>
             </div>
-            <input
-              class="slider"
-              id="size"
-              type="range"
-              min="1"
-              max="100"
-              step="1"
-              value="40"
-              aria-label="Folder size in gibibytes"
-            />
-            <div class="ui-scale" aria-hidden="true">
-              <span>1 GiB</span>
-              <span>100 GiB</span>
-            </div>
-          </div>
 
-          <div class="stats-figure col-1-7" data-reveal>
-            <p class="figure" aria-live="polite">
-              <span class="figure-num" id="figure-num">390</span
-              ><span class="figure-unit">s</span>
+            <div class="stats-figure" data-reveal>
+              <p class="figure" aria-live="polite">
+                <span class="figure-num" id="figure-num">390</span
+                ><span class="figure-unit">s</span>
+              </p>
+            </div>
+
+            <p class="stats-note" data-reveal>
+              Size ÷ 105 MiB/s, the rate measured on a 100 GiB send over
+              loopback. A gigabit cable tops out near 118 MiB/s; Wi-Fi is usually
+              a fraction of it.
             </p>
           </div>
-
-          <p class="stats-note col-8-12" data-reveal>
-            Size ÷ 105 MiB/s, the rate measured on a 100 GiB send over loopback.
-            A gigabit cable tops out near 118 MiB/s; Wi-Fi is usually a fraction
-            of it.
-          </p>
         </div>
       </section>
 
@@ -444,10 +455,12 @@
               <p class="band-sentence" id="band-1">
                 It never asks for an account.
               </p>
-              <p class="band-why" id="band-1-why">
-                No email, no sign-in, no cloud: two devices, two keys, and
-                nothing else on the wire.
-              </p>
+              <div class="band-reveal" id="band-1-why">
+                <p class="band-why">
+                  No email, no sign-in, no cloud: two devices, two keys, and
+                  nothing else on the wire.
+                </p>
+              </div>
               <button
                 class="band-switch"
                 type="button"
@@ -469,10 +482,12 @@
               <p class="band-sentence" id="band-2">
                 It never gives a broken file its name.
               </p>
-              <p class="band-why" id="band-2-why">
-                The receiver hashes sha256 while it writes, then installs. A
-                mismatch leaves the .part in place and says so.
-              </p>
+              <div class="band-reveal" id="band-2-why">
+                <p class="band-why">
+                  The receiver hashes sha256 while it writes, then installs. A
+                  mismatch leaves the .part in place and says so.
+                </p>
+              </div>
               <button
                 class="band-switch"
                 type="button"
@@ -494,11 +509,13 @@
               <p class="band-sentence" id="band-3">
                 It never trusts a key it has not pinned.
               </p>
-              <p class="band-why" id="band-3-why">
-                First contact pins the fingerprint. If a device comes back with a
-                different key the send is refused, and there is no bypass to
-                click.
-              </p>
+              <div class="band-reveal" id="band-3-why">
+                <p class="band-why">
+                  First contact pins the fingerprint. If a device comes back with
+                  a different key the send is refused, and there is no bypass to
+                  click.
+                </p>
+              </div>
               <button
                 class="band-switch"
                 type="button"
@@ -520,10 +537,12 @@
               <p class="band-sentence" id="band-4">
                 It never repeats what already arrived.
               </p>
-              <p class="band-why" id="band-4-why">
-                A dropped send asks the receiver for the range it already holds,
-                so only the missing bytes cross the wire.
-              </p>
+              <div class="band-reveal" id="band-4-why">
+                <p class="band-why">
+                  A dropped send asks the receiver for the range it already holds,
+                  so only the missing bytes cross the wire.
+                </p>
+              </div>
               <button
                 class="band-switch"
                 type="button"
@@ -543,12 +562,14 @@
           <div class="band">
             <div class="band-in">
               <p class="band-sentence" id="band-5">It never needs the internet.</p>
-              <p class="band-why" id="band-5-why">
-                Discovery is a multicast announcement on the local network and
-                the transfer is one TLS connection between the two devices.
-                Nothing is relayed; unplug the wide area link and the send still
-                works.
-              </p>
+              <div class="band-reveal" id="band-5-why">
+                <p class="band-why">
+                  Discovery is a multicast announcement on the local network and
+                  the transfer is one TLS connection between the two devices.
+                  Nothing is relayed; unplug the wide area link and the send
+                  still works.
+                </p>
+              </div>
               <button
                 class="band-switch"
                 type="button"

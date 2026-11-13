@@ -69,6 +69,11 @@
   --sans: "Open Sans", "Segoe UI", system-ui, sans-serif;
   --display: "Poppins", "Open Sans", system-ui, sans-serif;
 
+  /* Two curves for the whole page: one for things that arrive, one for things
+   * that move across the screen. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
   --page-x: clamp(20px, 3.2vw, 40px);
   --gap: clamp(16px, 1.6vw, 24px);
 
@@ -263,10 +268,6 @@ svg {
   color: var(--on-accent);
 }
 
-.btn-solid:hover {
-  background: var(--accent-hover);
-}
-
 .btn:active {
   transform: translateY(1px);
 }
@@ -277,11 +278,6 @@ svg {
   text-underline-offset: 4px;
   text-decoration-color: var(--line-strong);
   transition: color 140ms ease;
-}
-
-.link:hover {
-  color: var(--ink);
-  text-decoration-color: currentColor;
 }
 
 /* --- top bar ------------------------------------------------------------- */
@@ -322,18 +318,18 @@ svg {
   transition: color 140ms ease;
 }
 
-.top-nav a:hover {
-  color: var(--ink);
-}
-
 /* --- hero ----------------------------------------------------------------
- * The page's one flat colour field. The sentence is split by the interface:
- * the frame column sits in the gap between its two halves, and the reel
- * advances one step per screen of scroll while the halves hold.
+ * The page's one flat colour field and its one performance. A cover line holds
+ * the first screen; scrolling brings the sentence in from the two edges, opens
+ * the frame between the halves, then runs three states through it. Every phase
+ * is a function of one scroll progress, so the story scrubs backwards as
+ * willingly as forwards — this is scroll-*driven*, not scroll-jacked: the page
+ * never takes the wheel away from the reader.
  */
 
 .hero {
-  height: 240svh;
+  height: 380svh;
+  overflow: clip;
   background: var(--accent-soft);
 }
 
@@ -344,6 +340,89 @@ svg {
   padding: 0 var(--page-x) 36px;
   display: grid;
   grid-template-rows: auto 1fr auto;
+}
+
+/* The cover line: real text on the first screen, lifted out of the sentence's
+ * way as the sentence arrives. */
+
+.intro {
+  /* The cover is a wide-stage performance: script on, motion allowed, room to
+   * stand in. Everywhere else the sentence is the first thing on the page. */
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  align-content: center;
+  justify-items: start;
+  gap: 30px;
+  padding: 0 var(--page-x);
+  pointer-events: none;
+  opacity: var(--intro, 1);
+  transform: translateY(calc((1 - var(--intro, 1)) * -36px));
+  will-change: opacity, transform;
+}
+
+/* Once the cover has faded it is gone for good: a transparent full-screen
+ * layer still sits on top of the sentence and swallows every click and every
+ * hit test aimed at the words underneath. */
+.hero.is-intro-gone .intro {
+  visibility: hidden;
+}
+
+.intro-line {
+  max-width: 20ch;  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(40px, 5.4vw, 84px);
+  line-height: 0.96;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.intro-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.intro-cue {
+  font-size: var(--step-small);
+  color: var(--ink-2);
+}
+
+.intro-track {
+  position: relative;
+  width: 1px;
+  height: 36px;
+  background: var(--accent-line);
+}
+
+.intro-dot {
+  position: absolute;
+  left: -2px;
+  top: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: cue 2.4s var(--ease-in-out) infinite;
+}
+
+@keyframes cue {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  70% {
+    transform: translateY(31px);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(31px);
+    opacity: 0;
+  }
 }
 
 .hero-line {
@@ -359,13 +438,21 @@ svg {
   letter-spacing: -0.03em;
   position: relative;
   z-index: 2;
+  transform: scale(calc(0.965 + 0.035 * var(--split, 1)));
 }
 
 .hero-half {
   max-width: 30ch;
+  opacity: var(--split, 1);
+  will-change: transform, opacity;
+}
+
+.hero-half.start {
+  transform: translateX(calc((1 - var(--split, 1)) * -54vw));
 }
 
 .hero-half.end {
+  transform: translateX(calc((1 - var(--split, 1)) * 54vw));
   text-align: right;
 }
 
@@ -390,12 +477,14 @@ svg {
 
 .reel {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 50%;
   left: 50%;
   width: var(--frame-w);
-  transform: translateX(-50%);
+  height: var(--frame-h);
+  transform: translate(-50%, -50%);
   overflow: hidden;
+  border-radius: var(--r);
+  clip-path: inset(calc((1 - var(--open, 1)) * 50%) 0);
   pointer-events: none;
   z-index: 1;
 }
@@ -404,9 +493,8 @@ svg {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  padding-block: calc(50svh - (var(--frame-h) / 2));
   transform: translateY(calc(var(--step, 0) * -1 * (var(--frame-h) + 24px)));
-  transition: transform 620ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
 }
 
 .reel-frame {
@@ -415,6 +503,28 @@ svg {
   aspect-ratio: 16 / 9;
   display: flex;
   flex-direction: column;
+  /* The reel has depth: the frame in the window is full size and opaque, the
+   * one arriving is smaller and dimmer. */
+  opacity: calc(0.35 + 0.65 * var(--near, 1));
+  transform: scale(calc(0.94 + 0.06 * var(--near, 1)));
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+}
+
+/* The opening state exists only where the timeline can run. Without script,
+ * with motion reduced, or on a middle-width stage the sentence is simply
+ * there. Phones run the timeline too, with the sentence stacked. */
+@media (min-width: 1041px) and (prefers-reduced-motion: no-preference),
+  (max-width: 860px) and (min-height: 600px) and (prefers-reduced-motion: no-preference) {
+  .js .intro {
+    display: grid;
+  }
+
+  .js .hero {
+    --intro: 1;
+    --split: 0;
+    --open: 0;
+  }
 }
 
 /* --- interface fragments -------------------------------------------------
@@ -547,10 +657,12 @@ svg {
 
 [data-ui] .ui-bar span {
   display: block;
-  width: var(--v);
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(calc(var(--v) * var(--s, 1) * (0.3 + 0.7 * var(--near, 1))));
 }
 
 [data-ui] .ui-lane.is-done .ui-bar span {
@@ -750,90 +862,207 @@ svg {
 }
 
 /* --- how it works --------------------------------------------------------
- * Call and response: a narrow column starting at column 4, each exchange an
- * action (the call) and the state the app answers with.
+ * Compact: one screen, three columns, one move each. On a wide screen with
+ * motion allowed the section holds still while the reader scrolls, and each
+ * column's answer arrives in turn — the bars fill, the rail fills. Scroll-
+ * driven: nothing here captures the wheel.
  */
 
-.how .section-head {
-  margin-bottom: 32px;
+.how-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: clamp(30px, 3.4vw, 52px);
+}
+
+.how-rail {
+  margin-left: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: min(240px, 32vw);
+}
+
+.how-rail span {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.how-rail span::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--f, 0));
 }
 
 .exchanges {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: var(--gap);
-  row-gap: 88px;
+  grid-template-columns: 1fr;
+  gap: 56px;
 }
 
 .exchange {
-  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.exchange-text {
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: var(--gap);
+  align-content: start;
 }
 
 .call-title {
   font-family: var(--display);
   font-weight: 500;
   font-size: var(--step-statement);
-  line-height: 1.3;
+  line-height: 1.28;
   letter-spacing: -0.015em;
   text-wrap: balance;
+  max-width: 40ch;
 }
 
 .call {
-  margin-top: 18px;
+  margin-top: 14px;
   background: var(--raised);
   border-color: var(--raised);
 }
 
 .response {
-  margin-top: 24px;
-  margin-left: 56px;
+  margin-top: 12px;
 }
 
-.result {
-  grid-column: 4 / 11;
-  margin-top: 32px;
-}
-
-.result-note {
-  margin-top: 16px;
+.how-note {
+  grid-column: 1 / 8;
+  margin-top: clamp(30px, 3.4vw, 52px);
   font-size: var(--step-small);
   color: var(--ink);
   max-width: 62ch;
 }
 
-.result-note strong {
-  color: var(--ink);
+/* Three columns of one screen, and the hold that plays them. Below 1121px,
+ * without script or with motion reduced, it is the plain stacked layout and
+ * everything is visible at once. */
+@media (min-width: 1121px) {
+  .exchanges {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    /* one row per move: title, call, answer */
+    grid-template-rows: repeat(3, auto);
+    gap: 14px var(--gap);
+  }
+
+  /* The three rows are shared by all three columns, so the titles, the cards
+   * and the answers each start on the same line however long the text runs.
+   * The wrapper steps out of the way and the list items carry the subgrid. */
+  .exchange {
+    display: grid;
+    grid-row: span 3;
+    grid-template-rows: subgrid;
+  }
+
+  .exchange-text {
+    display: contents;
+  }
+
+  .call,
+  .response {
+    margin-top: 0;
+  }
+
+  /* two lines of title in every column, so the three cards start level */
+  .call-title {
+    min-height: 2.56em;
+  }
+}
+
+@media (min-width: 1121px) and (prefers-reduced-motion: no-preference) {
+  .js .how {
+    height: 220svh;
+    padding-block: 0;
+  }
+
+  .js .how > .grid {
+    position: sticky;
+    top: 0;
+    height: 100svh;
+    align-content: center;
+    padding-block: 24px;
+  }
+
+  .js .how .exchange {
+    --s: 0;
+  }
+
+  .js .how .response {
+    opacity: var(--s);
+    transform: translateY(calc((1 - var(--s)) * 18px));
+  }
+}
+
+/* Stacked, the same idea becomes one column at a time: a move's card settles
+ * and its answer arrives as that column reaches the reader, and the rail fills
+ * a segment per move. It scrubs both ways and never holds the wheel. */
+@media (max-width: 1120px) and (prefers-reduced-motion: no-preference) {
+  .js .how .call {
+    opacity: calc(0.4 + 0.6 * var(--s, 1));
+    transform: translateY(calc((1 - var(--s, 1)) * 18px));
+  }
+
+  .js .how .response {
+    opacity: var(--s, 1);
+    transform: translateY(calc((1 - var(--s, 1)) * 26px))
+      scale(calc(0.98 + 0.02 * var(--s, 1)));
+    transform-origin: 50% 0;
+  }
 }
 
 /* --- speed ---------------------------------------------------------------
- * The figure is the visitor's own: one slider, one stated formula.
+ * The figure is the visitor's own: one slider, one stated formula. Slider and
+ * answer are one instrument, so they sit on one panel — the only white field
+ * on the page — with the question and the stated rate at its two top corners.
  */
 
-.stats .grid {
-  min-height: 78svh;
-  grid-template-rows: auto auto 1fr auto;
-  align-content: start;
+.stats {
+  padding-block: clamp(56px, 6vw, 92px);
+}
+
+.stats-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--gap);
+  row-gap: clamp(28px, 4vw, 60px);
+  align-content: space-between;
+  min-height: min(58svh, 540px);
+  padding: clamp(24px, 3.2vw, 52px);
+  background: var(--surface);
+  border-radius: var(--r);
 }
 
 .stats-question {
-  grid-row: 1;
   grid-column: 1 / 8;
+  grid-row: 1;
+  align-self: start;
   font-family: var(--display);
   font-weight: 600;
   font-size: var(--step-head);
   line-height: 1.1;
   letter-spacing: -0.025em;
+  text-wrap: balance;
 }
 
 .control {
-  grid-row: 2;
-  grid-column: 1 / 6;
-  width: min(400px, 100%);
-  margin-top: 28px;
+  grid-column: 9 / 13;
+  grid-row: 1;
+  align-self: end;
+  /* the app's control, matted on the panel rather than outlined inside it */
+  background: var(--raised);
+  border-color: var(--raised);
 }
 
 [data-ui] .ui-value {
@@ -858,13 +1087,23 @@ svg {
 .slider::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background: var(--raised);
+  background: linear-gradient(
+    to right,
+    var(--accent) calc(var(--v, 0.4) * 100%),
+    var(--line-strong) 0
+  );
 }
 
 .slider::-moz-range-track {
   height: 6px;
   border-radius: 999px;
-  background: var(--raised);
+  background: var(--line-strong);
+}
+
+.slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 .slider::-webkit-slider-thumb {
@@ -899,8 +1138,8 @@ svg {
 }
 
 .stats-figure {
-  grid-row: 4;
-  grid-column: 1 / 7;
+  grid-column: 1 / 8;
+  grid-row: 2;
   align-self: end;
 }
 
@@ -910,7 +1149,7 @@ svg {
   gap: 10px;
   font-family: var(--display);
   font-weight: 600;
-  font-size: clamp(120px, 18vw, 300px);
+  font-size: clamp(110px, 18vw, 280px);
   line-height: 0.8;
   letter-spacing: -0.05em;
   font-variant-numeric: tabular-nums;
@@ -923,11 +1162,12 @@ svg {
 }
 
 .stats-note {
-  grid-row: 4;
-  grid-column: 8 / 13;
+  grid-column: 9 / 13;
+  grid-row: 2;
   align-self: end;
+  padding-bottom: clamp(4px, 1.4vw, 22px);
   max-width: 34ch;
-  color: var(--ink);
+  color: var(--ink-2);
 }
 
 /* --- promises ------------------------------------------------------------
@@ -1008,24 +1248,44 @@ svg {
   color: var(--ink);
 }
 
-.band-why {
+/* The mechanism under each promise. It opens with the switch: a grid row
+ * from 0fr to 1fr, so the band grows by exactly the text it reveals and the
+ * page below never jumps. The one sanctioned height transition on the page. */
+
+.band-reveal {
   grid-column: 1 / 9;
-  display: none;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 360ms var(--ease-out);
+}
+
+[data-on="true"] .band-reveal {
+  grid-template-rows: 1fr;
+}
+
+.band-why {
+  min-height: 0;
+  overflow: hidden;
   margin-top: 12px;
   max-width: 62ch;
   color: var(--ink-2);
+  opacity: 0;
+  transform: translateY(8px);
+  visibility: hidden;
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 320ms var(--ease-out),
+    visibility 0s linear 360ms;
 }
 
 [data-on="true"] .band-why {
-  display: block;
-  animation: why-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-
-@keyframes why-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  transition:
+    opacity 300ms var(--ease-out) 90ms,
+    transform 360ms var(--ease-out) 90ms,
+    visibility 0s linear;
 }
 
 .band-switch {
@@ -1060,7 +1320,7 @@ svg {
   height: 24px;
   border-radius: 999px;
   background: var(--surface);
-  transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: transform 220ms var(--ease-out);
 }
 
 .band[data-on="true"] .band-knob {
@@ -1136,7 +1396,7 @@ svg {
   border-radius: 2px;
   background: currentColor;
   transform: translateY(-50%);
-  transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: transform 220ms var(--ease-out);
 }
 
 .faq-plus::after {
@@ -1151,7 +1411,14 @@ svg {
   max-width: 52ch;
   padding: 0 24px 26px;
   margin-top: -6px;
-  animation: why-in 220ms ease both;
+  animation: why-in 220ms var(--ease-out) both;
+}
+
+@keyframes why-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 /* --- nothing to download yet --------------------------------------------- */
@@ -1264,10 +1531,6 @@ svg {
   transition: color 140ms ease;
 }
 
-.tile-nav a:hover {
-  color: var(--ink);
-}
-
 .tile-time {
   grid-column: 8 / 10;
   background: var(--surface-2);
@@ -1308,10 +1571,6 @@ svg {
   transition: color 140ms ease;
 }
 
-.tile-mail:hover {
-  color: var(--accent);
-}
-
 .tile-mark {
   grid-column: 1 / 9;
   grid-row: 2;
@@ -1338,10 +1597,6 @@ svg {
   transition: background-color 160ms ease;
 }
 
-.tile-go:hover {
-  background: var(--accent-hover);
-}
-
 .tile-go-text {
   font-family: var(--display);
   font-weight: 500;
@@ -1353,11 +1608,40 @@ svg {
 
 .tile-arrow {
   margin: auto 0 0 auto;
-  transition: transform 200ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: transform 200ms var(--ease-out);
 }
 
-.tile-go:hover .tile-arrow {
-  transform: translate(4px, -4px);
+/* --- hover ---------------------------------------------------------------
+ * Hover is a fine-pointer idea. On a phone the same rules stick to the last
+ * tapped tile, so they only exist where a mouse is actually pointing.
+ */
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-solid:hover {
+    background: var(--accent-hover);
+  }
+
+  .link:hover {
+    color: var(--ink);
+    text-decoration-color: currentColor;
+  }
+
+  .top-nav a:hover,
+  .tile-nav a:hover {
+    color: var(--ink);
+  }
+
+  .tile-mail:hover {
+    color: var(--accent);
+  }
+
+  .tile-go:hover {
+    background: var(--accent-hover);
+  }
+
+  .tile-go:hover .tile-arrow {
+    transform: translate(4px, -4px);
+  }
 }
 
 /* --- entrance ------------------------------------------------------------
@@ -1371,7 +1655,7 @@ svg {
   transform: translateY(16px);
   transition:
     opacity 520ms ease,
-    transform 560ms cubic-bezier(0.22, 0.61, 0.36, 1);
+    transform 560ms var(--ease-out);
   transition-delay: var(--d, 0ms);
 }
 
@@ -1414,6 +1698,7 @@ svg {
   .reel {
     position: static;
     width: auto;
+    height: auto;
     margin: 48px 0;
     transform: none;
     overflow: visible;
@@ -1453,9 +1738,35 @@ svg {
     transition: none;
   }
 
-  [data-on="true"] .band-why,
+  .band-reveal,
+  .band-why {
+    transition: none;
+  }
+
   .faq-a {
     animation: none;
+  }
+
+  .intro-dot {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* Reduced motion still gets the cover as a still: it is a line about the room,
+ * and it sits above the sentence like a standfirst. */
+@media (prefers-reduced-motion: reduce) and (min-width: 1041px) {
+  .js .intro {
+    display: grid;
+    position: static;
+    padding: 72px 0 0;
+    gap: 24px;
+    opacity: 1;
+    transform: none;
+  }
+
+  .hero-line {
+    padding: 28px 0 0;
   }
 }
 
@@ -1491,6 +1802,7 @@ svg {
   .reel {
     position: static;
     width: auto;
+    height: auto;
     margin: 26px 0;
     transform: none;
     overflow: visible;
@@ -1524,13 +1836,8 @@ svg {
     max-width: 15ch;
   }
 
-  .col-4-9,
-  .exchange-text {
+  .col-4-9 {
     grid-column: 3 / 10;
-  }
-
-  .result {
-    grid-column: 3 / 11;
   }
 
   .col-5-12 {
@@ -1571,19 +1878,15 @@ svg {
   .col-4-11,
   .col-5-12,
   .col-7-12,
-  .col-8-12,
-  .exchange-text,
-  .result {
+  .col-8-12 {
     grid-column: 1 / -1;
   }
 
   .exchanges {
-    row-gap: 64px;
+    gap: 56px;
   }
 
-  .response,
-  .result {
-    margin-left: 0;
+  .response {
     margin-top: 20px;
   }
 
@@ -1591,30 +1894,25 @@ svg {
     margin-top: 14px;
   }
 
-  .how .section-head {
-    margin-bottom: 28px;
-  }
-
   /* speed: on a phone the figure follows the slider at once; the tall
    * empty stage is a desktop gesture and only reads as a gap here */
 
-  .stats .grid {
+  .stats-panel {
     min-height: 0;
-    grid-template-rows: auto auto auto auto auto;
+    row-gap: 28px;
+    padding: 22px 20px 26px;
   }
 
-  .stats-question {
+  .stats-question,
+  .control,
+  .stats-figure,
+  .stats-note {
     grid-column: 1 / -1;
-  }
-
-  .control {
-    grid-column: 1 / -1;
-    width: 100%;
+    grid-row: auto;
   }
 
   .stats-figure {
-    grid-column: 1 / -1;
-    margin-top: 32px;
+    margin-top: 12px;
   }
 
   .figure {
@@ -1622,9 +1920,7 @@ svg {
   }
 
   .stats-note {
-    grid-row: 5;
-    grid-column: 1 / -1;
-    margin-top: 18px;
+    padding-bottom: 0;
     max-width: none;
     font-size: 15px;
   }
@@ -1702,8 +1998,11 @@ svg {
     line-height: 1.14;
   }
 
-  .band-why {
+  .band-reveal {
     grid-column: 1 / -1;
+  }
+
+  .band-why {
     font-size: 15px;
     margin-top: 6px;
   }
@@ -1825,3 +2124,87 @@ svg {
     font-size: 24vw;
   }
 }
+
+/* --- phone: the sentence, then one frame, held ----------------------------
+ * The same performance with less room. The sentence takes two stacked lines
+ * instead of the frame's two sides; the window sits under it, opens from a
+ * hairline and runs the three states through while the cover above fades.
+ * Still scroll-*driven*: the page never takes the wheel from the reader.
+ */
+
+@media (max-width: 860px) and (min-height: 600px) and (prefers-reduced-motion: no-preference) {
+  .js .hero {
+    height: 320svh;
+    --frame-h: clamp(244px, 34svh, 284px);
+  }
+
+  .js .hero-stage {
+    position: sticky;
+    top: 0;
+    height: 100svh;
+    display: grid;
+    grid-template-rows: auto 1fr auto 1fr auto;
+    padding: 0 var(--page-x) max(18px, env(safe-area-inset-bottom));
+  }
+
+  .js .top {
+    grid-row: 1;
+  }
+
+  /* the sentence sits on the window, the way it sits beside it on a desk;
+   * the two lines come in from the edges, a shorter throw than the desk's */
+  .js .hero-line {
+    grid-row: 2;
+    align-self: end;
+    padding-top: 0;
+    padding-bottom: 2px;
+  }
+
+  .js .hero-half.start {
+    transform: translateX(calc((1 - var(--split, 1)) * -32vw));
+  }
+
+  .js .hero-half.end {
+    transform: translateX(calc((1 - var(--split, 1)) * 32vw));
+  }
+
+  .js .reel {
+    grid-row: 3;
+    position: relative;
+    inset: auto;
+    width: min(100%, 560px);
+    height: var(--frame-h);
+    margin: 16px auto 0;
+    transform: none;
+    border-radius: 14px;
+  }
+
+  .js .reel-track {
+    gap: 16px;
+    transform: translateY(
+      calc(var(--step, 0) * -1 * (var(--frame-h) + 16px))
+    );
+  }
+
+  /* each frame fills the window; the quieter frames keep their footnote at
+   * the foot of the card */
+  .js .reel-frame {
+    aspect-ratio: auto;
+    height: var(--frame-h);
+  }
+
+  .js .hero-foot {
+    grid-row: 4;
+    align-self: start;
+    padding-top: 20px;
+  }
+
+  .js .intro {
+    padding: 0 var(--page-x) 12px;
+  }
+
+  .js .intro-line {
+    font-size: clamp(44px, 12vw, 56px);
+  }
+}
+
