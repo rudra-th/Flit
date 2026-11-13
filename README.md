@@ -13,6 +13,11 @@ own network. No account, no cloud, no configuration.
 > sends, and a network doctor. The Android app and the browser page are still
 > ahead.
 
+**[getflit.surge.sh](https://getflit.surge.sh)** is the page that explains it: the
+three moves, a real size-to-time figure, and five promises you can switch off.
+One static page, no framework, no third-party request; the source and design
+notes are in [`site/`](site/README.md).
+
 ---
 
 ## What it will be

@@ -11,3 +11,8 @@ dist/
 .taste-skill/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
+*.tsbuildinfo
+.run-*.sh
+.vscode/
+.idea/
+*.log

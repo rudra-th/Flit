@@ -25,6 +25,18 @@ npm run preview  # serves dist/ on 1421
 `dist/` is what ships: ~31 kB of HTML, ~26 kB of CSS, ~5 kB of JS, plus four
 woff2 files. No client framework, no router, no analytics, no cookie.
 
+## Live
+
+The built page is published at **https://getflit.surge.sh**:
+
+```sh
+npm run build
+npx surge dist getflit.surge.sh
+```
+
+`flit.surge.sh` itself belongs to another Surge account, so the page lives on
+`getflit.surge.sh`. Surge writes `dist/CNAME`; `dist/` is ignored.
+
 ## What drives it
 
 The page follows a direction sheet drawn with the `design-taste-frontend`
