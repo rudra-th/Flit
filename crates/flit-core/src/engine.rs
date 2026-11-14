@@ -697,10 +697,17 @@ impl Engine {
                             .map(ItemOutcome::from_file_outcome)
                             .collect()
                     }),
-                Content::Text { text, name } => connection
-                    .send_text(&text, &name)
-                    .await
-                    .map(|saved| vec![ItemOutcome::from_text(&name, saved)]),
+                Content::Text { text, name } => {
+                    // Text travels inside the manifest, so nothing is streamed:
+                    // the counter settles the moment the receiver has it.
+                    let bytes = text.len() as u64;
+                    let result = connection.send_text(&text, &name).await;
+                    if result.is_ok() {
+                        sending.add_bytes(bytes);
+                        sending.item_done();
+                    }
+                    result.map(|saved| vec![ItemOutcome::from_text(&name, saved)])
+                }
             };
             connection.close();
 
