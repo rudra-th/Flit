@@ -101,9 +101,11 @@ npm run tauri dev
 
 The window puts the devices on the network in front of you: drop files on it,
 pick a device, and the lane shows what has crossed the wire with a cancel beside
-it. Closing the window does not stop receiving — Flit stays in the tray, and
-quitting is a tray menu item, because a transfer app that stops listening the
-moment its window is dismissed is not doing its job.
+it. Paste puts whatever is on the clipboard in the tray as text — a link or a
+note leaves without a file ever touching the disk. Closing the window does not
+stop receiving — Flit stays in the tray, and quitting is a tray menu item,
+because a transfer app that stops listening the moment its window is dismissed
+is not doing its job.
 
 `npm run dev` opens the same window in a browser against a demo engine, which is
 how the design gets reviewed without a display. That demo code is compiled out of
@@ -117,6 +119,8 @@ docker build -t flit-desktop-gate -f apps/desktop/gate.Dockerfile apps/desktop
 docker run --rm -v "$PWD:/src" -w /src/apps/desktop/src-tauri \
   flit-desktop-gate cargo clippy --all-targets -- -D warnings
 ```
+
+CI runs the same check, plus the frontend build, on every push.
 
 ## Trying the transport
 
