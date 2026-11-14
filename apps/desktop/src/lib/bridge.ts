@@ -29,7 +29,11 @@ export interface FlitBridge {
   /** Expand dropped paths into what the tray shows. */
   inspect(paths: string[]): Promise<TrayEntry[]>;
   sendToPeer(deviceId: string, paths: string[]): Promise<number>;
+  /** Offer text — a link, a note — as one item the receiver saves as `name`. */
+  sendTextToPeer(deviceId: string, text: string, name: string): Promise<number>;
   sendToAddress(addr: string, fingerprint: string, paths: string[]): Promise<number>;
+  /** Whatever is on the system clipboard, as text. Empty means nothing there. */
+  readClipboard(): Promise<string>;
   cancel(id: number): Promise<boolean>;
   pickFiles(): Promise<string[]>;
   subscribe(handler: (event: EngineEvent) => void): Promise<() => void>;
@@ -55,8 +59,11 @@ const shell: FlitBridge = {
   inspect: (paths) => invoke<TrayEntry[]>("inspect_paths", { paths }),
   sendToPeer: (deviceId, paths) =>
     invoke<number>("send_to_peer", { deviceId, paths }),
+  sendTextToPeer: (deviceId, text, name) =>
+    invoke<number>("send_text_to_peer", { deviceId, text, name }),
   sendToAddress: (addr, fingerprint, paths) =>
     invoke<number>("send_to_address", { addr, fingerprint, paths }),
+  readClipboard: () => invoke<string>("read_clipboard"),
   cancel: (id) => invoke<boolean>("cancel_transfer", { id }),
   async pickFiles() {
     const picked = await open({

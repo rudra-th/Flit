@@ -20,7 +20,7 @@ export function Tray({
   target: string | null;
   canSend: boolean;
   onAdd: () => void;
-  onRemove: (path: string) => void;
+  onRemove: (entry: TrayEntry) => void;
   onClear: () => void;
   onSend: () => void;
 }) {
@@ -32,6 +32,9 @@ export function Tray({
       : entries.length === 1
         ? "1 item"
         : `${entries.length} items`;
+  // Pasted text is one item with a name, not a file with a tree; the footer
+  // counts it honestly rather than calling a link "1 file".
+  const hasText = entries.some((entry) => entry.text !== undefined);
 
   return (
     <section className="panel tray" aria-label="Files to send">
@@ -68,12 +71,15 @@ export function Tray({
         ) : (
           <div className="tray-list">
             {entries.map((entry) => (
-              <div className="tray-item" key={entry.path}>
+              <div className="tray-item" key={keyOf(entry)}>
                 <span className="tray-icon" aria-hidden>
                   {entry.isDir ? <FolderIcon size={13} /> : <FileIcon size={13} />}
                 </span>
-                <span className="name" title={entry.path}>
+                <span className="name" title={entry.text ?? entry.path}>
                   {entry.name}
+                  {entry.text !== undefined ? (
+                    <span className="peek"> · {peek(entry.text)}</span>
+                  ) : null}
                 </span>
                 <span className="size">
                   {entry.isDir ? `${entry.files} files · ` : ""}
@@ -82,8 +88,12 @@ export function Tray({
                 <button
                   type="button"
                   className="remove"
-                  aria-label={`Remove ${entry.name}`}
-                  onClick={() => onRemove(entry.path)}
+                  aria-label={
+                    entry.text === undefined
+                      ? `Remove ${entry.name}`
+                      : "Remove pasted text"
+                  }
+                  onClick={() => onRemove(entry)}
                 >
                   <CloseIcon size={12} />
                 </button>
@@ -97,7 +107,7 @@ export function Tray({
         <div className="tray-foot">
           <div className="tray-total">
             <span>
-              {files} {files === 1 ? "file" : "files"}
+              {files} {hasText ? (files === 1 ? "item" : "items") : files === 1 ? "file" : "files"}
             </span>
             <span className="sum">{bytes(total)}</span>
           </div>
@@ -116,4 +126,16 @@ export function Tray({
       ) : null}
     </section>
   );
+}
+
+/** A row's identity: a path, or the text itself (already deduplicated, so two
+ * pasted items can never share it). */
+function keyOf(entry: TrayEntry): string {
+  return entry.text ?? entry.path;
+}
+
+/** The first line of pasted text, short enough to sit beside a file name. */
+function peek(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 52 ? `${flat.slice(0, 52)}…` : flat;
 }

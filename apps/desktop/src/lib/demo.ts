@@ -205,15 +205,18 @@ export function createDemo(): FlitBridge {
   const run = (
     id: number,
     peer: Peer,
+    label: string,
     paths: string[],
     bytes: number,
     files: number,
+    outcomes: ItemOutcome[],
+    duration = DURATION_MS,
   ) => {
     const started = Date.now();
     emit({
       kind: "transferStarted",
       id,
-      label: baseName(paths[0] ?? ""),
+      label,
       files,
       bytes,
       peer: peer.addr,
@@ -224,7 +227,7 @@ export function createDemo(): FlitBridge {
       timer: window.setInterval(() => {
         if (runner.cancelled) return;
         const elapsed = Date.now() - started;
-        const t = Math.min(1, elapsed / DURATION_MS);
+        const t = Math.min(1, elapsed / duration);
         // Real transfers slow near the end (small tail items). Easing here is
         // for the reviewer's eye, not a model of the wire.
         const eased = 1 - Math.pow(1 - t, 1.6);
@@ -241,14 +244,7 @@ export function createDemo(): FlitBridge {
         if (t >= 1) {
           window.clearInterval(runner.timer);
           runners.delete(id);
-          const items: ItemOutcome[] = paths.map((path) => ({
-            path,
-            name: baseName(path),
-            savedAs: baseName(path),
-            bytes: Math.round(bytes / paths.length),
-            error: null,
-          }));
-          emit({ kind: "transferFinished", id, items });
+          emit({ kind: "transferFinished", id, items: outcomes });
           history.unshift({
             at: Date.now(),
             peer: peer.alias,
@@ -257,7 +253,7 @@ export function createDemo(): FlitBridge {
             addr: peer.addr,
             files,
             bytes,
-            ms: DURATION_MS,
+            ms: duration,
             ok: true,
             error: null,
             paths,
@@ -268,6 +264,16 @@ export function createDemo(): FlitBridge {
     runners.set(id, runner);
     return id;
   };
+
+  /** The outcomes a file send ends with, one per path. */
+  const fileOutcomes = (paths: string[], bytes: number): ItemOutcome[] =>
+    paths.map((path) => ({
+      path,
+      name: baseName(path),
+      savedAs: baseName(path),
+      bytes: Math.round(bytes / paths.length),
+      error: null,
+    }));
 
   const describe = (paths: string[]) =>
     paths.map((path) => {
@@ -385,7 +391,39 @@ export function createDemo(): FlitBridge {
       const bits = entries.reduce((sum, entry) => sum + entry.bytes, 0);
       const files = entries.reduce((sum, entry) => sum + entry.files, 0);
       const id = nextId++;
-      return run(id, peer, paths, bits, files);
+      return run(
+        id,
+        peer,
+        baseName(paths[0] ?? ""),
+        paths,
+        bits,
+        files,
+        fileOutcomes(paths, bits),
+      );
+    },
+
+    // Text is one item with no bytes on the wire, so the lane is a blink rather
+    // than a progress bar — the same shape a real send takes.
+    async sendTextToPeer(deviceId, text, name) {
+      const peer = peers.get(deviceId);
+      if (!peer) throw new Error(`no nearby device with id ${deviceId}`);
+      const bytes = new TextEncoder().encode(text).length;
+      return run(
+        nextId++,
+        peer,
+        name,
+        [],
+        bytes,
+        1,
+        [{ path: "", name, savedAs: name, bytes, error: null }],
+        900,
+      );
+    },
+
+    // Nothing to ask the system for in a browser: a paste is simulated with the
+    // link the demo already uses for copy.
+    async readClipboard() {
+      return "https://example.com/q3-handover";
     },
 
     async sendToAddress(addr, fingerprint, paths) {
@@ -405,7 +443,15 @@ export function createDemo(): FlitBridge {
       const bits = entries.reduce((sum, entry) => sum + entry.bytes, 0);
       const files = entries.reduce((sum, entry) => sum + entry.files, 0);
       const id = nextId++;
-      return run(id, target, paths, bits, files);
+      return run(
+        id,
+        target,
+        baseName(paths[0] ?? ""),
+        paths,
+        bits,
+        files,
+        fileOutcomes(paths, bits),
+      );
     },
 
     async cancel(id) {

@@ -793,6 +793,12 @@ button {
   white-space: nowrap;
 }
 
+/* The first line of a pasted link or note, dimmed beside its saved name. */
+.tray-item .peek {
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
 .tray-item .size {
   font-size: 12.5px;
   color: var(--ink-3);

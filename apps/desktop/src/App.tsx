@@ -8,6 +8,7 @@ import type {
   Doctor,
   EngineEvent,
   HistoryEntry,
+  ItemOutcome,
   Peer,
   Status,
   Transfer,
@@ -108,6 +109,40 @@ export default function App() {
     },
     [say],
   );
+
+  const addClipboard = useCallback(async () => {
+    const live = bridgeRef.current;
+    if (!live) return;
+    let text: string;
+    try {
+      text = await live.readClipboard();
+    } catch (error) {
+      say(describe(error), "bad");
+      return;
+    }
+    // Whitespace decides whether there is anything to send; the payload itself
+    // is handed over exactly as it was copied.
+    if (text.trim().length === 0) {
+      say("Your clipboard is empty.", "bad");
+      return;
+    }
+    if (trayRef.current.some((entry) => entry.text === text)) {
+      say("That text is already in the tray.");
+      return;
+    }
+    const size = new TextEncoder().encode(text).length;
+    setTray((current) => [
+      ...current,
+      {
+        path: "",
+        name: "clipboard.txt",
+        isDir: false,
+        files: 1,
+        bytes: size,
+        text,
+      },
+    ]);
+  }, [say]);
 
   const handleEvent = useCallback(
     (event: EngineEvent) => {
@@ -234,9 +269,7 @@ export default function App() {
           });
           samples.current.delete(event.id);
           if (refused.length === 0) {
-            say(
-              `${event.items.length === 1 ? "File" : `${event.items.length} files`} saved at the receiver.`,
-            );
+            say(savedNote(event.items));
           } else if (refused.length === event.items.length) {
             say(
               `Nothing was accepted. ${refused[0].error ?? "The receiver refused every item."}`,
@@ -388,20 +421,30 @@ export default function App() {
         return;
       }
 
-      const paths = items.map((entry) => entry.path);
-      const extra = paths.length - 1;
+      // Files ride in one session per device. Text is its own item with no
+      // bytes to stream, so it gets its own lane instead of joining the pile.
+      const paths = items.flatMap((entry) =>
+        entry.text === undefined ? [entry.path] : [],
+      );
+      const texts = items.filter((entry) => entry.text !== undefined);
+      const extra = Math.max(0, paths.length - 1);
 
       // One independent session per device. A device that packed up should not
       // take the others down with it, and every session has its own lane.
       const results = await Promise.allSettled(
         targets.map(async (id) => {
-          const started = await live.sendToPeer(id, paths);
-          if (extra > 0) {
-            setTransfers((current) => {
-              const transfer = current[started];
-              if (!transfer) return current;
-              return { ...current, [started]: { ...transfer, extra } };
-            });
+          if (paths.length > 0) {
+            const started = await live.sendToPeer(id, paths);
+            if (extra > 0) {
+              setTransfers((current) => {
+                const transfer = current[started];
+                if (!transfer) return current;
+                return { ...current, [started]: { ...transfer, extra } };
+              });
+            }
+          }
+          for (const entry of texts) {
+            await live.sendTextToPeer(id, entry.text ?? "", entry.name);
           }
         }),
       );
@@ -446,7 +489,7 @@ export default function App() {
       const live = bridgeRef.current;
       if (!live) return;
       if (entry.paths.length === 0) {
-        say("That entry no longer has its file paths.", "bad");
+        say("That send has nothing to send again.", "bad");
         return;
       }
       try {
@@ -498,8 +541,17 @@ export default function App() {
                 await addPaths(await live.pickFiles());
               })();
             }}
-            onRemove={(path) =>
-              setTray((current) => current.filter((entry) => entry.path !== path))
+            onPaste={() => {
+              void addClipboard();
+            }}
+            onRemove={(removed) =>
+              setTray((current) =>
+                current.filter((entry) =>
+                  removed.text === undefined
+                    ? entry.path !== removed.path
+                    : entry.text !== removed.text,
+                ),
+              )
             }
             onClear={() => setTray([])}
             onSend={(deviceIds) => {
@@ -556,6 +608,18 @@ function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Something went wrong.";
+}
+
+/** What to say when everything arrived. Files and pasted text read differently:
+ * one is "saved it", the other is "it is on the other side, named". */
+function savedNote(items: ItemOutcome[]): string {
+  const text = items.length > 0 && items.every((item) => item.path === "");
+  if (text) {
+    return items.length === 1
+      ? `Saved as ${items[0].name} at the receiver.`
+      : `${items.length} text items saved at the receiver.`;
+  }
+  return `${items.length === 1 ? "File" : `${items.length} files`} saved at the receiver.`;
 }
 
 /** The screen is part of the URL, so a deep link from the tray and a screenshot

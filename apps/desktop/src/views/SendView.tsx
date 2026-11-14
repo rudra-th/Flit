@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { DeviceCard } from "../components/DeviceCard";
 import { HistoryHead, HistoryRow } from "../components/HistoryRow";
-import { AlertIcon, PlusIcon } from "../components/Icons";
+import { AlertIcon, CopyIcon, PlusIcon } from "../components/Icons";
 import { Lane } from "../components/Lane";
 import { Tray } from "../components/Tray";
 import { rate } from "../lib/format";
@@ -23,6 +23,7 @@ export function SendView({
   history,
   onSelect,
   onAdd,
+  onPaste,
   onRemove,
   onClear,
   onSend,
@@ -39,7 +40,8 @@ export function SendView({
   history: HistoryEntry[];
   onSelect: (deviceId: string) => void;
   onAdd: () => void;
-  onRemove: (path: string) => void;
+  onPaste: () => void;
+  onRemove: (entry: TrayEntry) => void;
   onClear: () => void;
   onSend: (deviceIds?: string[]) => void;
   onCancel: (id: number) => void;
@@ -97,6 +99,15 @@ export function SendView({
           <p className="title-note">{finding}</p>
         </div>
         <div className="title-actions">
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={onPaste}
+            title="Send whatever is on your clipboard as text"
+          >
+            <CopyIcon size={13} />
+            Paste
+          </button>
           <button type="button" className="btn" onClick={onAdd}>
             <PlusIcon size={14} />
             Add files

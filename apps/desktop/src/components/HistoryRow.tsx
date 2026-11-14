@@ -46,14 +46,16 @@ export function HistoryRow({
       </span>
 
       <span className="row-actions">
-        <button
-          type="button"
-          className="btn btn-quiet"
-          onClick={() => onResend(entry)}
-          title={`Send the same items to ${entry.peer} again`}
-        >
-          Send again
-        </button>
+        {entry.paths.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => onResend(entry)}
+            title={`Send the same items to ${entry.peer} again`}
+          >
+            Send again
+          </button>
+        ) : null}
       </span>
     </div>
   );

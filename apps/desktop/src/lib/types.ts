@@ -87,6 +87,9 @@ export interface TrayEntry {
   isDir: boolean;
   files: number;
   bytes: number;
+  /** Set when this row is text pasted from the clipboard rather than a path:
+   * the payload the receiver saves as `name`. Absent for files and folders. */
+  text?: string;
 }
 
 export type EngineEvent =
