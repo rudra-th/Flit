@@ -14,7 +14,7 @@ use flit_api::{DISCOVERY_PORT, MULTICAST_GROUP};
 use flit_core::{DiscoveryState, collect_targets};
 use flit_crypto::badge_of;
 use if_addrs::IfAddr;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::{
     dto::{
@@ -174,6 +174,44 @@ pub async fn send_to_peer(
     // row repeatable.
     shell.inner.data().note_paths(id.as_u64(), spell(&paths));
     Ok(id.as_u64())
+}
+
+/// Send the clipboard as one text item to a device from the peer list.
+///
+/// Text has no local path and nothing to stream: the engine hands it over inside
+/// the manifest, and the receiver saves it as an ordinary file. No paths are
+/// recorded, which is what makes "send that again" honestly unavailable for a
+/// pasted link instead of silently empty.
+#[tauri::command]
+pub async fn send_text_to_peer(
+    shell: State<'_, Shell>,
+    device_id: String,
+    text: String,
+    name: String,
+) -> Result<u64, String> {
+    let id = shell
+        .inner
+        .engine
+        .send_text_to_peer(&device_id, text, name)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    shell.inner.data().note_paths(id.as_u64(), Vec::new());
+    Ok(id.as_u64())
+}
+
+/// Whatever is on the system clipboard, as text.
+///
+/// Read here rather than in the webview: the browser clipboard API needs a
+/// permission this window never asks for, and a paste that fails silently is
+/// worse than one that says why.
+#[tauri::command]
+pub async fn read_clipboard(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    app.clipboard().read_text().map_err(|_| {
+        "Flit could not read the clipboard. Copy the text again, then paste.".to_string()
+    })
 }
 
 /// Send files to an address and a fingerprint, without discovery.

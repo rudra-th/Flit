@@ -25,6 +25,7 @@ use crate::state::Shell;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::status,
             commands::peers,
@@ -32,8 +33,10 @@ fn main() {
             commands::doctor,
             commands::inspect_paths,
             commands::send_to_peer,
+            commands::send_text_to_peer,
             commands::send_to_address,
             commands::cancel_transfer,
+            commands::read_clipboard,
         ])
         .setup(|app| {
             match Shell::start(app.handle()) {
