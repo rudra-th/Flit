@@ -148,6 +148,22 @@ firewall. Allow it on private networks; otherwise other devices will see the PC
 and never be able to connect. The Doctor screen checks that the receiver answers
 on its own LAN address and repeats the same advice when it does not.
 
+### Install on Android
+
+The `android (debug apk)` job on the same Actions tab leaves
+`flit-android-debug`, a debug-signed APK for `arm64-v8a` and `x86_64`. With USB
+debugging on:
+
+```sh
+adb install -r app-debug.apk
+```
+
+The phone needs no account and asks for no runtime permission. It appears on the
+computer's Devices screen on its own, with the same four emoji and four words as
+the phone's own card — that is how you know the two screens are talking about
+the same key. [apps/android/README.md](apps/android/README.md) has the build
+steps and what each generated directory is.
+
 ## Trying the transport
 
 Two terminals on one machine are enough to see the M1 pipeline work:
