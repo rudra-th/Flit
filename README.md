@@ -124,8 +124,9 @@ CI runs the same check, plus the frontend build, on every push.
 
 ### Install on Windows
 
-Each green `package (windows)` run on the Actions tab leaves one artifact,
-`flit-windows-x64`, containing the two ways to run the window:
+Each green `package (windows)` run on the
+[Actions tab](https://github.com/rudra-th/Flit/actions/workflows/ci.yml) leaves
+one artifact, `flit-windows-x64`, containing the two ways to run the window:
 
 - `Flit_0.1.0_x64-setup.exe` — a per-user NSIS installer. No administrator
   prompt, no `Program Files`; it installs under `%LOCALAPPDATA%\Flit` and adds a
