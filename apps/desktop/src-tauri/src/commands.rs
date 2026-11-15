@@ -8,6 +8,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use flit_api::{DISCOVERY_PORT, MULTICAST_GROUP};
@@ -15,6 +16,7 @@ use flit_core::{DiscoveryState, collect_targets};
 use flit_crypto::badge_of;
 use if_addrs::IfAddr;
 use tauri::{AppHandle, State};
+use tokio::{net::TcpStream, time::timeout};
 
 use crate::{
     dto::{
@@ -67,6 +69,10 @@ pub async fn doctor(shell: State<'_, Shell>) -> Result<Doctor, String> {
     let engine = &shell.inner.engine;
     let addr = reachable(engine.addr());
     let root = engine.root().to_path_buf();
+    // Asked before the checks are built: a receiver that does not answer on its
+    // own address will not answer a phone either, and that is worth saying with
+    // evidence rather than a shrug.
+    let answers = answers_on(&addr).await;
 
     let checks = vec![
         Check::new(
@@ -113,11 +119,27 @@ pub async fn doctor(shell: State<'_, Shell>) -> Result<Doctor, String> {
         },
         Check::new(
             "firewall",
-            "Firewall",
-            "unknown",
-            "This build cannot read the firewall rules.",
+            "Inbound port",
+            if answers { "ok" } else { "bad" },
+            if answers {
+                format!("The receiver answers on {addr}.")
+            } else {
+                format!("Nothing answered on {addr}.")
+            },
         )
-        .sub("If a device cannot connect, allow Flit on private networks."),
+        .sub(if answers {
+            // Windows asks once, when a program first listens, and a "no" is
+            // remembered silently. This is the one sentence a person needs when
+            // the PC is found but the transfer never starts.
+            if cfg!(windows) {
+                "Windows may ask once to allow Flit through the firewall. Allow it on private networks."
+            } else {
+                "If another device cannot connect, look here before looking there."
+            }
+        } else {
+            "The listener is bound elsewhere, or something on this machine is blocking it."
+        })
+        .value(addr),
     ];
 
     Ok(Doctor {
@@ -289,6 +311,22 @@ impl Check {
 fn reachable(bound: SocketAddr) -> String {
     let ip = primary_ipv4().unwrap_or_else(|| bound.ip());
     SocketAddr::new(ip, bound.port()).to_string()
+}
+
+/// Ask the receiver to answer on the address another device would dial.
+///
+/// This is a loopback-shaped probe: it proves the listener is bound to an
+/// interface others can reach and is accepting connections. It cannot see past
+/// this machine's firewall, so the Doctor reports what was answered and lets
+/// the firewall sentence carry the rest.
+async fn answers_on(addr: &str) -> bool {
+    let Ok(target) = addr.parse::<SocketAddr>() else {
+        return false;
+    };
+    matches!(
+        timeout(Duration::from_millis(500), TcpStream::connect(target)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// The machine's routable IPv4 address, if it has one.
