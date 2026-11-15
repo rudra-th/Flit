@@ -10,6 +10,7 @@ members = [
     "crates/flit-core",
     "crates/flit-cli",
     "crates/flit-bench",
+    "crates/flit-mobile",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ flit-client = { path = "crates/flit-client" }
 flit-server = { path = "crates/flit-server" }
 flit-discovery = { path = "crates/flit-discovery" }
 flit-core = { path = "crates/flit-core" }
+flit-mobile = { path = "crates/flit-mobile" }
 
 [profile.release]
 codegen-units = 1

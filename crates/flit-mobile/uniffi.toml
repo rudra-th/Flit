@@ -1,0 +1,6 @@
+# The Kotlin side of the FFI surface. Generated sources land in this package,
+# and the loader looks for `libflit_mobile.so` in the APK's jniLibs.
+
+[bindings.kotlin]
+package_name = "dev.flit.android.ffi"
+cdylib_name = "flit_mobile"
