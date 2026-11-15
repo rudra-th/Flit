@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window background follows the system theme. Compose does the real
+         drawing; this only stops a white flash before the first frame. -->
+    <style name="Theme.Flit" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#14171A</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

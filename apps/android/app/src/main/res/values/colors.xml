@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The paper the Compose window draws on, repeated here so the window
+         background does not flash white before the first frame. -->
+    <color name="ground">#F6F5F2</color>
+    <color name="accent">#0E7A5C</color>
+</resources>

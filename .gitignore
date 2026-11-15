@@ -16,3 +16,11 @@ apps/desktop/src-tauri/gen/
 .vscode/
 .idea/
 *.log
+apps/android/.gradle/
+apps/android/local.properties
+apps/android/**/build/
+# Generated from the Rust cdylib: `cargo ndk` writes the .so, the bindgen
+# writes the Kotlin. Neither belongs in the repository.
+apps/android/app/src/main/jniLibs/
+apps/android/app/src/main/java/dev/flit/android/ffi/
+
