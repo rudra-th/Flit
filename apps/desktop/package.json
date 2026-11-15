@@ -13,8 +13,8 @@
     "@fontsource/ibm-plex-mono": "^5.2.5",
     "@fontsource/open-sans": "^5.2.5",
     "@fontsource/poppins": "^5.2.5",
-    "@tauri-apps/api": "^2.9.0",
-    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/api": "~2.11.1",
+    "@tauri-apps/plugin-dialog": "~2.7.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
