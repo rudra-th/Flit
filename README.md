@@ -122,6 +122,31 @@ docker run --rm -v "$PWD:/src" -w /src/apps/desktop/src-tauri \
 
 CI runs the same check, plus the frontend build, on every push.
 
+### Install on Windows
+
+Each green `package (windows)` run on the Actions tab leaves one artifact,
+`flit-windows-x64`, containing the two ways to run the window:
+
+- `Flit_0.1.0_x64-setup.exe` — a per-user NSIS installer. No administrator
+  prompt, no `Program Files`; it installs under `%LOCALAPPDATA%\Flit` and adds a
+  Start menu entry.
+- `Flit-0.1.0-windows-x64.zip` — the executable and this README, for machines
+  where an installer is not allowed. Unzip it anywhere and run
+  `flit-desktop.exe`.
+
+The installer fetches the WebView2 runtime if Windows 10 does not have it yet,
+so that first install needs a network connection. Windows 11 and an up-to-date
+Windows 10 already have the runtime, and the portable zip assumes it.
+
+Uninstalling removes the program, its identity and its send history from
+`%APPDATA%\Flit`. Files you received stay in `Downloads\Flit` — those are yours,
+not ours to delete.
+
+Windows asks once, the first time Flit listens, whether to allow it through the
+firewall. Allow it on private networks; otherwise other devices will see the PC
+and never be able to connect. The Doctor screen checks that the receiver answers
+on its own LAN address and repeats the same advice when it does not.
+
 ## Trying the transport
 
 Two terminals on one machine are enough to see the M1 pipeline work:
