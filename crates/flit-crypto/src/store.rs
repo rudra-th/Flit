@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{CryptoError, Identity, clean_name, random_name};
+use crate::{CryptoError, Identity, MAX_NAME_CHARS, clean_name, random_name};
 
 /// First line of an identity file. Bumping this is how a future format change
 /// stays recognizable instead of being parsed as garbage.
@@ -258,8 +258,7 @@ impl NameFile {
     /// Refuses a blank name or one longer than [`MAX_NAME_CHARS`]; the caller
     /// keeps the old name rather than announcing an empty row.
     pub fn save(&self, name: &str) -> Result<String, StoreError> {
-        let name = clean_name(name)
-            .ok_or(StoreError::BadName(1, crate::MAX_NAME_CHARS))?;
+        let name = clean_name(name).ok_or(StoreError::BadName(1, MAX_NAME_CHARS))?;
 
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|source| StoreError::Write {
