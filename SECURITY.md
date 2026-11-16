@@ -46,7 +46,8 @@ the smallest reproduction you have. Expect an acknowledgement within a week.
 - **First contact.** The fingerprint has to come from somewhere you trust — a QR
   code, the other screen, discovery on a network you trust. On a network where
   someone can answer in the receiver's place before you have pinned anything,
-  compare the safety badge out of band.
+  compare the fingerprint out of band. The name a device shows is chosen by that
+  device and proves nothing.
 - **Metadata.** Sizes, names and timing are visible to anyone watching the wire;
   the payload is encrypted, the shape of the transfer is not.
 - **Compromise of either device.** Flit protects the wire, not the endpoints.

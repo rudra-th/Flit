@@ -98,10 +98,10 @@ reason:
    photo set as atmosphere. Redrawn: this product's pictures are its own
    interface, and a stock photograph would break both the zero-third-party rule
    and the nothing-invented rule. The four fragments carry the picture count.
-2. **The 4-emoji identity badge → the 4-word half only.** The app shows four
-   emoji and four words for fingerprint checking. Emoji in page text is a hard
-   gate failure, and words alone are the more useful half for a page you cannot
-   compare against another screen.
+2. **The identity badge → nothing.** The app shows a device's two-word name and
+   the fingerprint it pins; the fragments show the name, because a fingerprint
+   clipped into a mock would look like a claim the page cannot verify. The FAQ
+   says where the fingerprint lives instead.
 3. **Monospace addresses → the text face with tabular figures.** The app sets
    `192.168.1.31` and `89 MB/s` in a mono face; on a marketing page mono outside
    `<code>` is a gate failure. Two faces only: Poppins for display, Open Sans for

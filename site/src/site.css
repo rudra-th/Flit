@@ -608,17 +608,8 @@ svg {
   min-width: 0;
 }
 
-[data-ui] .ui-badge {
-  margin-left: auto;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--raised);
-  font-size: 12px;
-  color: var(--ink-2);
-  white-space: nowrap;
-}
-
 [data-ui] .ui-hint {
+  margin-left: auto;
   font-size: 12px;
   color: var(--accent);
 }
@@ -1926,7 +1917,7 @@ svg {
   }
 
   /* the chosen device, on a phone: the name needs the whole width, so the
-   * badge and "Selected" take a second line instead of squeezing the address */
+   * "Selected" label takes a second line instead of squeezing the address */
 
   .call .ui-device {
     flex-wrap: wrap;
@@ -1935,10 +1926,6 @@ svg {
 
   .call .ui-device .ui-who {
     flex: 1 1 100%;
-  }
-
-  .call .ui-device .ui-badge {
-    margin-left: 0;
   }
 
   .call .ui-device .ui-hint {

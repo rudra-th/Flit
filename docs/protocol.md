@@ -500,9 +500,10 @@ The browser client exists because HTTP does. It is receive-only.
 - Discovery leaks: alias, device class, public fingerprint. Nothing else.
 - The fingerprint protects against a passive listener and against a peer
   impersonating a device you already paired with. It does **not** protect a
-  first contact against an active man-in-the-middle. The PIN and the safety
-  badge are the visible mitigations, and both are shown before the first byte
-  moves.
+  first contact against an active man-in-the-middle. The PIN and the
+  fingerprint are the visible mitigations, and both are shown before the first
+  byte moves. An announced `alias` is a local label: its owner can change it at
+  will, so it is never evidence of identity.
 - Every incoming name is hostile: paths are sanitized segment by segment, and
   traversal, absolute paths, reserved device names and control characters are
   rejected rather than rewritten.

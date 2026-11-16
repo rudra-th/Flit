@@ -54,7 +54,7 @@ The full specification is in [`docs/protocol.md`](docs/protocol.md).
 ```
 crates/
   flit-api/        wire types: info, manifest, errors, limits
-  flit-crypto/     Ed25519 identity, fingerprints, safety badges, key file
+  flit-crypto/     Ed25519 identity, fingerprints, display names, key file
   flit-storage/    hostile-path sanitizing, conflict naming
   flit-discovery/  multicast announce, subnet scan, peer table
   flit-client/     dial, pin, streaming send, resume, probe
@@ -159,10 +159,12 @@ adb install -r app-debug.apk
 ```
 
 The phone needs no account and asks for no runtime permission. It appears on the
-computer's Devices screen on its own, with the same four emoji and four words as
-the phone's own card — that is how you know the two screens are talking about
-the same key. [apps/android/README.md](apps/android/README.md) has the build
-steps and what each generated directory is.
+computer's Devices screen on its own, under the name the phone chose — two
+random words on first run, changeable from the phone's own card. That name is a
+label, not proof: two devices can pick the same one. What identifies the phone
+is its fingerprint, which is what Flit pins on the first send.
+[apps/android/README.md](apps/android/README.md) has the build steps and what
+each generated directory is.
 
 ## Trying the transport
 
@@ -218,10 +220,11 @@ cargo run -p flit-cli -- discover --scan          # when multicast is filtered
 cargo run -p flit-cli -- discover --json          # for scripts
 ```
 
-`discover` listens for a few seconds and prints each device's address, device
-id, how it was found, and its safety badge; the full fingerprint is printed at
-the end, ready to paste into `send --fingerprint`. It does not announce itself,
-because it has no control port to advertise.
+`discover` listens for a few seconds and prints each device's name, address,
+device id and how it was found; the full fingerprint is printed at the end,
+ready to paste into `send --fingerprint`. The name is whatever that device
+chose, so it is recognition only. It does not announce itself, because it has no
+control port to advertise.
 
 `--scan` adds the fallback: a TLS `/info` probe across this machine's private
 /24s, 32 at a time, 300 ms per host. Public subnets are never scanned, and a scan
@@ -236,8 +239,8 @@ send, it just cannot be found by discovery.
 
 What Flit defends against, what it explicitly does not, and how to report a
 problem are in [`SECURITY.md`](SECURITY.md). Short version: pinned TLS 1.3,
-verified files, untrusted names; no audit yet, so compare the safety badge out
-of band the first time you trust a device.
+verified files, untrusted names; no audit yet, so compare the fingerprint out of
+band the first time you trust a device.
 
 ## Licence
 
