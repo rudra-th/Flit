@@ -16,6 +16,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        // The two ABIs CI compiles. JNA's aar carries mips and armeabi stubs;
+        // shipping them would claim an install the engine cannot serve.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
