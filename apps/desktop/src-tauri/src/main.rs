@@ -28,6 +28,7 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::status,
+            commands::rename,
             commands::peers,
             commands::history,
             commands::doctor,

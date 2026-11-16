@@ -20,7 +20,7 @@ use clap::{Parser, Subcommand};
 use flit_api::{Announce, DEFAULT_ALIAS, DeviceType, PROTO_VERSION, TLS_PORT};
 use flit_client::Client;
 use flit_core::collect_targets;
-use flit_crypto::{Identity, IdentityFile, StoreError, badge_of};
+use flit_crypto::{Identity, IdentityFile, NameFile, StoreError};
 use flit_discovery::{Discovery, DiscoveryConfig, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig};
 
@@ -41,7 +41,7 @@ struct Cli {
 enum Command {
     /// Print build facts and run the built-in self-checks.
     Doctor,
-    /// Show this device's identity, fingerprint and safety badge.
+    /// Show this device's identity: fingerprint and name.
     Identity,
     /// Find nearby devices on this network.
     Discover {
@@ -200,16 +200,15 @@ fn load_identity(path: Option<&Path>) -> Result<(Identity, IdentityFile), String
     Ok((identity, store))
 }
 
-/// Print the identity, fingerprint and badge the way a user would compare them.
+/// Print the identity, fingerprint and name the way a user would compare them.
 fn print_identity(identity: &Identity, store: &IdentityFile) {
     println!("flit {}", env!("CARGO_PKG_VERSION"));
     println!("  device        {}", identity.device_id());
     println!("  fingerprint   {}", identity.fingerprint());
-    println!(
-        "  safety badge  {}  {}",
-        identity.badge_emoji(),
-        identity.badge_words()
-    );
+    match NameFile::beside(store).load_or_create() {
+        Ok(name) => println!("  name          {name}"),
+        Err(err) => println!("  name          (unavailable: {err})"),
+    }
     println!("  identity file {}", store.path().display());
 }
 
@@ -367,10 +366,7 @@ async fn discover(
 
     println!();
     for peer in &peers {
-        let badge = badge_of(&peer.fingerprint);
-        let emoji = badge.as_ref().map(|b| b.emoji.as_str()).unwrap_or("----");
-        let words = badge.as_ref().map(|b| b.words.as_str()).unwrap_or("");
-        println!("  {emoji}  {}", peer.alias);
+        println!("  {}", peer.alias);
         println!(
             "        {}  {}  {}",
             peer.addr,
@@ -383,7 +379,6 @@ async fn discover(
         if peer.pin_required {
             println!("        pin required");
         }
-        println!("        {words}");
     }
     println!();
     println!(
@@ -431,8 +426,12 @@ async fn serve(
     };
 
     let mut config = ServerConfig::default().with_bind(SocketAddr::new(bind, port));
-    if let Some(alias) = alias {
-        config = config.with_alias(alias);
+    match alias {
+        Some(alias) => config = config.with_alias(alias),
+        None => match NameFile::beside(&store).load_or_create() {
+            Ok(name) => config = config.with_alias(name),
+            Err(err) => eprintln!("flit: no device name: {err}"),
+        },
     }
     if let Some(dir) = dir {
         config = config.with_root(dir);
@@ -532,11 +531,9 @@ async fn info(addr: SocketAddr, fingerprint: &str, pin: Option<&str>) -> i32 {
         }
     }
 
-    if let Some(badge) = badge_of(&info.fingerprint) {
-        let short = info.fingerprint.get(..16).unwrap_or(&info.fingerprint);
-        println!("\n{}  {}", badge.emoji, badge.words);
-        println!("{short}  {}", info.alias);
-    }
+    let short = info.fingerprint.get(..16).unwrap_or(&info.fingerprint);
+    println!("\n{}", info.alias);
+    println!("{short}");
     0
 }
 
@@ -684,12 +681,7 @@ fn doctor() -> i32 {
     failures += report(
         "identity fingerprint",
         identity.fingerprint().len() == 64 && identity.device_id().len() == 16,
-        &format!(
-            "{} / {} / {}",
-            identity.device_id(),
-            identity.badge_emoji(),
-            identity.badge_words()
-        ),
+        &identity.device_id(),
     );
 
     // Signatures must round-trip and must not verify under tampering.

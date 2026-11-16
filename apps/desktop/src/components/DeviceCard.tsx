@@ -30,9 +30,8 @@ const KIND_ICON: Record<
 /** One reachable device. The whole card is the target: there is no separate
  * "send" button to hunt for, and a double-click sends straight away.
  *
- * The four emoji are identity, not decoration — they are what the person
- * compares against the other screen — so they stay on the card and the words
- * ride along as the tooltip. */
+ * The name is the device's own label, so it is recognition, not proof; the
+ * fingerprint behind it is what the shell pins on the first send. */
 export function DeviceCard({
   peer,
   selected,
@@ -67,15 +66,7 @@ export function DeviceCard({
       onDoubleClick={onSend}
     >
       <span className="device-top">
-        {peer.badge ? (
-          <span className="badge-chip" title={peer.badge.words}>
-            <span className="badge badge-sm" aria-hidden>
-              {peer.badge.emoji}
-            </span>
-          </span>
-        ) : (
-          <span className="source">{SOURCE[peer.source]}</span>
-        )}
+        <span className="source">{SOURCE[peer.source]}</span>
       </span>
 
       <span className="device-icon" data-kind={peer.deviceType} aria-hidden>
@@ -91,7 +82,7 @@ export function DeviceCard({
       </span>
 
       <span className="device-hint">
-        {selected ? "Selected" : (peer.badge?.words ?? SOURCE[peer.source])}
+        {selected ? "Selected" : SOURCE[peer.source]}
       </span>
     </button>
   );

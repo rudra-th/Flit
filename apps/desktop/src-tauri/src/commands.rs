@@ -13,15 +13,12 @@ use std::{
 
 use flit_api::{DISCOVERY_PORT, MULTICAST_GROUP};
 use flit_core::{DiscoveryState, collect_targets};
-use flit_crypto::badge_of;
 use if_addrs::IfAddr;
 use tauri::{AppHandle, State};
 use tokio::{net::TcpStream, time::timeout};
 
 use crate::{
-    dto::{
-        BadgeDto, Check, Discovery, Doctor, HistoryEntry, NetInterface, Peer, Status, TrayEntry,
-    },
+    dto::{Check, Discovery, Doctor, HistoryEntry, NetInterface, Peer, Status, TrayEntry},
     state::Shell,
 };
 
@@ -34,7 +31,6 @@ pub async fn status(shell: State<'_, Shell>) -> Result<Status, String> {
 
     Ok(Status {
         alias: info.alias.clone(),
-        badge: badge_of(&fingerprint).map(|badge| BadgeDto::from(&badge)),
         fingerprint,
         addr: reachable(engine.addr()),
         root: engine.root().to_string_lossy().into_owned(),
@@ -42,6 +38,27 @@ pub async fn status(shell: State<'_, Shell>) -> Result<Status, String> {
         version: info.version.clone(),
         discovery: Discovery::from(engine.discovery()),
     })
+}
+
+/// Change the name other devices see.
+///
+/// The announce carries whatever name the receiver had when it started, so the
+/// new one is written to disk and the shell restarts: someone who renamed their
+/// device expects the other screen to say the new name now, not after the next
+/// reboot.
+#[tauri::command]
+pub async fn rename(app: AppHandle, name: String) -> Result<String, String> {
+    let store = flit_crypto::IdentityFile::default_path().map_err(|err| err.to_string())?;
+    let saved = flit_crypto::NameFile::beside(&store)
+        .save(&name)
+        .map_err(|err| err.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        app.restart();
+    });
+
+    Ok(saved)
 }
 
 /// Devices visible right now.

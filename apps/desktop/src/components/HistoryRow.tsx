@@ -22,9 +22,6 @@ export function HistoryRow({
       <span className="when">{when(entry.at, now)}</span>
 
       <span className="who">
-        <span className="badge badge-sm" aria-hidden>
-          {entry.emoji ?? ""}
-        </span>
         <span className="who-text">
           <span className="name">{entry.peer}</span>
           {entry.ok ? null : <span className="row-error">{entry.error}</span>}

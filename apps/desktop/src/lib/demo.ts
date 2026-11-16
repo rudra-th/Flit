@@ -21,10 +21,9 @@ import type {
 } from "./types";
 
 const THIS_MACHINE: Status = {
-  alias: "Desk",
+  alias: "quiet heron",
   fingerprint:
     "8d2f5a7c9e1b4d6f8a0c3e5b7d92f4a6c8e0b2d4f6a8c1e3b5d7f9a0c2e4b6d8",
-  badge: { emoji: "🦉🌾🎧🪁", words: "owl-meadow-earphone-kite" },
   addr: "192.168.1.18:47821",
   root: "C:\\Users\\rhea\\Flit",
   proto: 1,
@@ -35,33 +34,30 @@ const THIS_MACHINE: Status = {
 const PEERS: Peer[] = [
   {
     deviceId: "dev_studio",
-    alias: "Studio PC",
+    alias: "copper fox",
     fingerprint:
       "3f9a1c74b8e25d06a4c7f13b9e8d2a5c60b4e17f9d3a8c2b5e6f0a9d4c7b1e83",
     deviceType: "desktop",
     addr: "192.168.1.24:47821",
     source: "multicast",
-    badge: { emoji: "🦊🌊🔧🍋", words: "fox-tide-wrench-lemon" },
   },
   {
     deviceId: "dev_pixel",
-    alias: "Rhea – Pixel 9",
+    alias: "silk otter",
     fingerprint:
       "b71c4e9f2a6d8305c1e7b4a9d2f6c8e30a5b1d7f4c9e2a6b8d3f0c5a1e7b9d46",
     deviceType: "phone",
     addr: "192.168.1.31:47821",
     source: "multicast",
-    badge: { emoji: "🐚🌿🔔🍇", words: "shell-fern-bell-grape" },
   },
   {
     deviceId: "dev_nas",
-    alias: "Attic NAS",
+    alias: "slate otter",
     fingerprint:
       "c2e8b4a7d1f95036e2a8c5b7d9f1a4c60e3b8d2f5a7c9e1b4d6f8a0c3e5b7d92",
     deviceType: "headless",
     addr: "192.168.1.7:47821",
     source: "scan",
-    badge: { emoji: "🗿🧭📎🕯", words: "stone-compass-clip-candle" },
   },
 ];
 
@@ -134,8 +130,7 @@ function seedHistory(): HistoryEntry[] {
   return [
     {
       at: now - 12 * 60_000,
-      peer: "Studio PC",
-      emoji: "🦊🌊🔧🍋",
+      peer: PEERS[0].alias,
       fingerprint: PEERS[0].fingerprint,
       addr: PEERS[0].addr,
       files: 1,
@@ -148,7 +143,6 @@ function seedHistory(): HistoryEntry[] {
     {
       at: now - 26 * 60 * 60_000,
       peer: "Rhea – Pixel 9",
-      emoji: "🐚🌿🔔🍇",
       fingerprint: PEERS[1].fingerprint,
       addr: PEERS[1].addr,
       files: 6,
@@ -160,8 +154,7 @@ function seedHistory(): HistoryEntry[] {
     },
     {
       at: now - 8 * 24 * 60 * 60_000,
-      peer: "Attic NAS",
-      emoji: "🗿🧭📎🕯",
+      peer: PEERS[2].alias,
       fingerprint: PEERS[2].fingerprint,
       addr: PEERS[2].addr,
       files: 1,
@@ -248,7 +241,6 @@ export function createDemo(): FlitBridge {
           history.unshift({
             at: Date.now(),
             peer: peer.alias,
-            emoji: peer.badge?.emoji ?? null,
             fingerprint: peer.fingerprint,
             addr: peer.addr,
             files,
@@ -368,6 +360,15 @@ export function createDemo(): FlitBridge {
       return THIS_MACHINE;
     },
 
+    async rename(name: string) {
+      const clean = name.trim().split(/\s+/).join(" ");
+      if (clean.length === 0 || clean.length > 32) {
+        throw new Error("A name has to be 1 to 32 characters.");
+      }
+      THIS_MACHINE.alias = clean;
+      return clean;
+    },
+
     async peers() {
       return [...peers.values()];
     },
@@ -437,7 +438,6 @@ export function createDemo(): FlitBridge {
           deviceType: "desktop",
           addr,
           source: "manual",
-          badge: null,
         } satisfies Peer);
       const entries = describe(paths);
       const bits = entries.reduce((sum, entry) => sum + entry.bytes, 0);

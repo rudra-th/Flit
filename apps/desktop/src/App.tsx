@@ -70,6 +70,23 @@ export default function App() {
     if (window.location.hash !== hash) window.location.hash = hash;
   }, []);
 
+  /** Save a new name. The shell restarts to announce it, so the toast is the
+   * last thing this window says. */
+  const rename = useCallback(
+    async (name: string) => {
+      const live = bridgeRef.current;
+      if (!live) return;
+      try {
+        const saved = await live.rename(name);
+        say(`This device is now ${saved}. Flit is restarting.`, "ok");
+      } catch (error) {
+        say(describe(error), "bad");
+        throw error;
+      }
+    },
+    [say],
+  );
+
   useEffect(() => {
     const onHash = () => setView(viewFromHash());
     window.addEventListener("hashchange", onHash);
@@ -576,7 +593,7 @@ export default function App() {
         ) : view === "doctor" ? (
           <DoctorView doctor={doctor} onRefresh={refreshDoctor} />
         ) : (
-          <DeviceView status={status} />
+          <DeviceView status={status} onRename={rename} />
         )}
       </main>
 

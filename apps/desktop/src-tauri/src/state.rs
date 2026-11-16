@@ -43,9 +43,12 @@ impl Shell {
         let store = flit_crypto::IdentityFile::default_path().map_err(|err| err.to_string())?;
         let identity = store.load_or_create().map_err(|err| err.to_string())?;
         let history_path = store.path().with_file_name("history.json");
+        let name = flit_crypto::NameFile::beside(&store)
+            .load_or_create()
+            .map_err(|err| err.to_string())?;
 
         let config = EngineConfig {
-            alias: hostname(),
+            alias: name,
             ..EngineConfig::default()
         };
         let engine = tauri::async_runtime::block_on(Engine::start(Arc::new(identity), config))
@@ -170,8 +173,6 @@ struct Sending {
     at: u64,
     /// Alias of the device it went to.
     alias: String,
-    /// Its badge, if the fingerprint parsed.
-    emoji: Option<String>,
     /// The key that was pinned.
     fingerprint: String,
     /// Where it went.
@@ -259,7 +260,6 @@ impl Data {
                 alias: peer
                     .map(|view| view.alias.clone())
                     .unwrap_or_else(|| addr.ip().to_string()),
-                emoji: peer.and_then(|view| view.badge.as_ref().map(|badge| badge.emoji.clone())),
                 fingerprint: peer
                     .map(|view| view.fingerprint.clone())
                     .unwrap_or_default(),
@@ -298,7 +298,6 @@ impl Data {
             HistoryEntry {
                 at: send.at,
                 peer: send.alias,
-                emoji: send.emoji,
                 fingerprint: send.fingerprint,
                 addr: send.addr.to_string(),
                 files,
@@ -370,16 +369,6 @@ fn pump(inner: Arc<Inner>, app: AppHandle) {
             }
         }
     });
-}
-
-/// The machine's name, which is what the device list should say.
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| flit_api::DEFAULT_ALIAS.to_string())
 }
 
 /// Milliseconds since the Unix epoch, which is what the window's clock expects.

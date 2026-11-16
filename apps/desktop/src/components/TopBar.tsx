@@ -69,22 +69,16 @@ export function TopBar({
         className="me"
         aria-current={view === "device" ? "page" : undefined}
         title={
-          status?.badge?.words
-            ? `This device · ${status.badge.words}`
-            : "This device"
+          status?.alias ? `This device · ${status.alias}` : "This device"
         }
         onClick={() => onChange("device")}
       >
-        {status?.badge?.emoji ? (
-          <span className="badge badge-sm" aria-hidden>
-            {status.badge.emoji}
-          </span>
-        ) : (
-          <DeviceIcon size={15} />
-        )}
+        <DeviceIcon size={15} />
         <span className="who">
           <span className="name">{status?.alias ?? "This device"}</span>
-          <span className="sub">{status === null ? "starting" : "this device"}</span>
+          <span className="sub">
+            {status === null ? "starting" : "this device"}
+          </span>
         </span>
       </button>
 

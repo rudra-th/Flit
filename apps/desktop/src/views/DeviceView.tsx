@@ -1,6 +1,11 @@
+import { useState, type FormEvent } from "react";
+
 import { CopyButton } from "../components/CopyButton";
 import { shortFingerprint } from "../lib/format";
 import type { Status } from "../lib/types";
+
+/** Longest name the shell will announce or a peer list can show. */
+const MAX_NAME = 32;
 
 function Field({
   label,
@@ -28,9 +33,96 @@ function Field({
   );
 }
 
+/** The name, with the one control that changes it. Saving restarts the shell,
+ * because the announce is fixed when the receiver starts. */
+function NameField({
+  status,
+  onRename,
+}: {
+  status: Status | null;
+  onRename: (name: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  if (status === null) {
+    return <Field label="Name" value={null} />;
+  }
+
+  if (!editing) {
+    return (
+      <div className="field">
+        <span className="field-label">Name</span>
+        <span className="field-value text">{status.alias}</span>
+        <button
+          type="button"
+          className="btn btn-quiet"
+          onClick={() => {
+            setDraft(status.alias);
+            setEditing(true);
+          }}
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await onRename(draft);
+      // The shell restarts in a moment; leave the form while it does.
+      setEditing(false);
+    } catch {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="field" onSubmit={submit}>
+      <label className="field-label" htmlFor="device-name">
+        Name
+      </label>
+      <span className="name-form">
+        <input
+          id="device-name"
+          value={draft}
+          maxLength={MAX_NAME}
+          autoFocus
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <button
+          type="submit"
+          className="btn"
+          disabled={saving || draft.trim().length === 0}
+        >
+          {saving ? "Saving" : "Save"}
+        </button>
+        <button
+          type="button"
+          className="btn btn-quiet"
+          disabled={saving}
+          onClick={() => setEditing(false)}
+        >
+          Cancel
+        </button>
+      </span>
+    </form>
+  );
+}
+
 /** Who this device is to everyone else: the name they see, the fingerprint
- * they pin, and the four symbols they compare. */
-export function DeviceView({ status }: { status: Status | null }) {
+ * they pin, and where it answers. */
+export function DeviceView({
+  status,
+  onRename,
+}: {
+  status: Status | null;
+  onRename: (name: string) => Promise<void>;
+}) {
   const discovery =
     status === null
       ? "—"
@@ -46,15 +138,15 @@ export function DeviceView({ status }: { status: Status | null }) {
         <div>
           <h1>This device</h1>
           <p className="title-note">
-            Other devices see this name and these four symbols. The fingerprint is
-            the identity; the rest is cosmetic.
+            Other devices see this name. Anyone can type any name, so the
+            fingerprint — not the name — is what Flit pins on the first send.
           </p>
         </div>
       </header>
 
       <div className="identity">
         <section className="panel" aria-label="Identity">
-          <Field label="Name" value={status?.alias ?? null} text />
+          <NameField status={status} onRename={onRename} />
           <Field
             label="Fingerprint"
             value={
@@ -65,7 +157,6 @@ export function DeviceView({ status }: { status: Status | null }) {
             mono
             copy={status?.fingerprint}
           />
-          <Field label="Symbols" value={status?.badge?.words ?? null} copy={status?.badge?.words} />
           <Field
             label="Listening"
             value={status?.addr ?? null}
@@ -89,15 +180,13 @@ export function DeviceView({ status }: { status: Status | null }) {
           />
         </section>
 
-        <aside className="panel badge-card" aria-label="Safety badge">
-          <span className="badge" aria-hidden>
-            {status?.badge?.emoji ?? ""}
-          </span>
-          <span className="words">{status?.badge?.words ?? ""}</span>
+        <aside className="panel name-card" aria-label="Name and identity">
+          <span className="alias">{status?.alias ?? "—"}</span>
           <p>
-            Compare these four symbols with the other device before the first
-            send. They are derived from the key, so a peer cannot show a matching
-            badge without holding the matching identity.
+            Two words are easy to read across a room, which is all a name is
+            for. The key behind it never changes: Flit pins the fingerprint on
+            the first send, so a device that renames itself cannot quietly
+            become one you already trust.
           </p>
         </aside>
       </div>

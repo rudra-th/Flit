@@ -5,11 +5,6 @@
 export type DeviceType = "desktop" | "laptop" | "phone" | "tablet" | "headless";
 export type PeerSource = "multicast" | "scan" | "manual";
 
-export interface Badge {
-  emoji: string;
-  words: string;
-}
-
 export interface Peer {
   deviceId: string;
   alias: string;
@@ -17,7 +12,6 @@ export interface Peer {
   deviceType: DeviceType;
   addr: string;
   source: PeerSource;
-  badge: Badge | null;
 }
 
 export type DiscoveryState =
@@ -28,7 +22,6 @@ export type DiscoveryState =
 export interface Status {
   alias: string;
   fingerprint: string;
-  badge: Badge | null;
   addr: string;
   root: string;
   proto: number;
@@ -47,7 +40,6 @@ export interface ItemOutcome {
 export interface HistoryEntry {
   at: number;
   peer: string;
-  emoji: string | null;
   fingerprint: string;
   addr: string;
   files: number;

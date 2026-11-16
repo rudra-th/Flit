@@ -10,26 +10,7 @@
 
 use flit_api::DeviceType;
 use flit_core::{DiscoveryState, ItemOutcome, PeerSource, PeerView};
-use flit_crypto::Badge;
 use serde::Serialize;
-
-/// The four pictures and four words a person compares between screens.
-#[derive(Debug, Clone, Serialize)]
-pub struct BadgeDto {
-    /// Four emoji, no separator.
-    pub emoji: String,
-    /// Four hyphen-separated words.
-    pub words: String,
-}
-
-impl From<&Badge> for BadgeDto {
-    fn from(badge: &Badge) -> Self {
-        Self {
-            emoji: badge.emoji.clone(),
-            words: badge.words.clone(),
-        }
-    }
-}
 
 /// One device the engine can see.
 #[derive(Debug, Clone, Serialize)]
@@ -47,8 +28,6 @@ pub struct Peer {
     pub addr: String,
     /// How this device was learned about.
     pub source: &'static str,
-    /// The safety badge, when the fingerprint is a real SHA-256.
-    pub badge: Option<BadgeDto>,
 }
 
 impl From<&PeerView> for Peer {
@@ -60,7 +39,6 @@ impl From<&PeerView> for Peer {
             device_type: device_type(view.device_type),
             addr: view.addr.to_string(),
             source: source(view.source),
-            badge: view.badge.as_ref().map(BadgeDto::from),
         }
     }
 }
@@ -123,8 +101,6 @@ pub struct Status {
     pub alias: String,
     /// Fingerprint they pin.
     pub fingerprint: String,
-    /// Four emoji and four words derived from the fingerprint.
-    pub badge: Option<BadgeDto>,
     /// Address a peer can reach, as `ip:port`.
     pub addr: String,
     /// Folder received files land in.
@@ -172,8 +148,6 @@ pub struct HistoryEntry {
     pub at: u64,
     /// Alias of the device it went to.
     pub peer: String,
-    /// Its badge, if it had one.
-    pub emoji: Option<String>,
     /// Fingerprint that was pinned.
     pub fingerprint: String,
     /// Address it went to, as `ip:port`.

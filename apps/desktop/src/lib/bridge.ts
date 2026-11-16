@@ -23,6 +23,8 @@ export interface FlitBridge {
   /** True when this is the browser stand-in, never in a shipped build. */
   readonly demo: boolean;
   status(): Promise<Status>;
+  /** Change the name other devices see. The shell restarts to announce it. */
+  rename(name: string): Promise<string>;
   peers(): Promise<Peer[]>;
   history(): Promise<HistoryEntry[]>;
   doctor(): Promise<Doctor>;
@@ -53,6 +55,7 @@ export function runningInShell(): boolean {
 const shell: FlitBridge = {
   demo: false,
   status: () => invoke<Status>("status"),
+  rename: (name) => invoke<string>("rename", { name }),
   peers: () => invoke<Peer[]>("peers"),
   history: () => invoke<HistoryEntry[]>("history"),
   doctor: () => invoke<Doctor>("doctor"),
