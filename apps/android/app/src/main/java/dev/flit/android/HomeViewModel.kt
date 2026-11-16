@@ -2,12 +2,18 @@ package dev.flit.android
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
 import android.net.wifi.WifiManager
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.flit.android.ffi.DeviceInfo
 import dev.flit.android.ffi.MobileEngine
 import dev.flit.android.ffi.PeerInfo
+import dev.flit.android.ffi.ReceivedFile
+import dev.flit.android.ffi.TransferEvent
+import dev.flit.android.ffi.TransferListener
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -23,11 +29,42 @@ import kotlinx.coroutines.withContext
 data class HomeState(
     val device: DeviceInfo? = null,
     val peers: List<PeerInfo> = emptyList(),
+    /** Device id chosen as the destination, if any. */
+    val selected: String? = null,
+    /** The send the row above the list is about, if one is recent. */
+    val transfer: TransferUi? = null,
+    /** What has landed in the receive folder. */
+    val received: List<ReceivedFile> = emptyList(),
     val error: String? = null,
     /** One sentence to show once, then clear. */
     val notice: String? = null,
     val refreshing: Boolean = false,
 )
+
+/** One send, flattened for the row that draws it. */
+data class TransferUi(
+    val id: ULong,
+    val label: String,
+    val sent: Long,
+    val total: Long,
+    val filesDone: Int,
+    val files: Int,
+    val finished: Boolean = false,
+    val cancelled: Boolean = false,
+    /** Why it failed, or which files were refused. */
+    val problem: String? = null,
+) {
+    /** No more events will arrive for this send. */
+    val done: Boolean get() = finished || cancelled || problem != null
+
+    /** 0f..1f; 0f while the total is not known yet. */
+    val fraction: Float
+        get() = when {
+            total <= 0L -> 0f
+            sent >= total -> 1f
+            else -> (sent.toDouble() / total.toDouble()).toFloat()
+        }
+}
 
 /**
  * Owns the engine for as long as the screen exists.
@@ -69,7 +106,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             started.onSuccess { open ->
                 engine = open
                 _state.update { it.copy(error = null) }
+                listen(open)
                 poll()
+                refreshReceived()
             }.onFailure { err ->
                 _state.update { it.copy(error = describe(err)) }
             }
@@ -103,6 +142,156 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /**
+     * Attach the one listener this engine will have.
+     *
+     * Events arrive on a Rust thread. `MutableStateFlow.update` is safe there,
+     * so nothing is posted back to the main loop just to store a number; the
+     * receive folder is read the moment a send finishes, which is the only time
+     * it can change.
+     */
+    private fun listen(open: MobileEngine) {
+        open.watch(object : TransferListener {
+            override fun onEvent(event: TransferEvent) {
+                val landed = if (event.kind == "finished") {
+                    runCatching { open.received() }.getOrDefault(emptyList())
+                } else {
+                    null
+                }
+                _state.update { current ->
+                    current.copy(
+                        transfer = merge(current.transfer, event),
+                        received = landed ?: current.received,
+                    )
+                }
+            }
+        })
+    }
+
+    /** Turn one event into the row's next value. */
+    private fun merge(current: TransferUi?, event: TransferEvent): TransferUi {
+        val base = current?.takeIf { it.id == event.id } ?: TransferUi(
+            id = event.id,
+            label = event.label,
+            sent = 0,
+            total = 0,
+            filesDone = 0,
+            files = 0,
+        )
+
+        return when (event.kind) {
+            "started" -> base.copy(
+                label = event.label.ifEmpty { base.label },
+                total = event.bytes.toLong(),
+                files = event.files.toInt(),
+            )
+            "progress" -> base.copy(
+                sent = event.sent.toLong(),
+                total = event.bytes.toLong(),
+                filesDone = event.filesDone.toInt(),
+                files = if (event.files.toInt() > 0) event.files.toInt() else base.files,
+            )
+            "finished" -> base.copy(
+                sent = event.sent.toLong(),
+                total = if (event.bytes.toLong() > 0) event.bytes.toLong() else base.total,
+                filesDone = event.filesDone.toInt(),
+                files = event.files.toInt(),
+                finished = true,
+                problem = event.detail.ifEmpty { null },
+            )
+            "failed" -> base.copy(problem = event.detail.ifEmpty { "The send stopped." })
+            "cancelled" -> base.copy(cancelled = true)
+            else -> base
+        }
+    }
+
+    /** Chosen destination, or `null` to choose nothing. */
+    fun select(deviceId: String) {
+        _state.update { it.copy(selected = if (it.selected == deviceId) null else deviceId) }
+    }
+
+    /**
+     * Send the files behind `uris` to the chosen device.
+     *
+     * A picked file is a `content://` URI the engine cannot open, so each one
+     * is copied into the cache first. That costs a copy, which is honest and
+     * simple; streaming straight from the descriptor needs a send path that
+     * takes file descriptors, and that is not this week.
+     */
+    fun send(uris: List<Uri>) {
+        val open = engine ?: return
+        val target = _state.value.selected
+        if (target == null) {
+            _state.update { it.copy(notice = "Choose a device first.") }
+            return
+        }
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val outbox = File(getApplication<Application>().cacheDir, "outbox").apply { mkdirs() }
+                    uris.mapNotNull { copyIn(outbox, it) }.map { it.absolutePath }
+                }.mapCatching { paths ->
+                    if (paths.isEmpty()) error("No file could be read.")
+                    open.sendFiles(target, paths)
+                }
+            }
+
+            result.onFailure { err ->
+                _state.update { it.copy(notice = describe(err)) }
+            }
+        }
+    }
+
+    /** Stop the send the row is showing. */
+    fun cancelSend() {
+        val open = engine ?: return
+        val id = _state.value.transfer?.id ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { open.cancel(id) } }
+        }
+    }
+
+    /** A finished row has been read; clear it. */
+    fun dismissTransfer() {
+        _state.update { it.copy(transfer = null) }
+    }
+
+    /** What has landed in the receive folder, newest first. */
+    fun refreshReceived() {
+        val open = engine ?: return
+        viewModelScope.launch {
+            val files = withContext(Dispatchers.IO) {
+                runCatching { open.received() }.getOrDefault(emptyList())
+            }
+            _state.update { it.copy(received = files) }
+        }
+    }
+
+    /** Copy one picked document into the cache under a usable name. */
+    private fun copyIn(dir: File, uri: Uri): File? = runCatching {
+        val resolver = getApplication<Application>().contentResolver
+        val raw = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        val safe = (raw ?: "file")
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .take(120)
+            .ifBlank { "file" }
+
+        var target = File(dir, safe)
+        var index = 2
+        while (target.exists()) {
+            target = File(dir, "$index-$safe")
+            index += 1
+        }
+
+        resolver.openInputStream(uri)?.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        } ?: return null
+
+        target
+    }.getOrNull()
 
     override fun onCleared() {
         poller?.cancel()

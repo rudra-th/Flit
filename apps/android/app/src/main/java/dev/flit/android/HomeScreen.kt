@@ -1,8 +1,13 @@
 ﻿package dev.flit.android
 
+import android.net.Uri
+import android.text.format.Formatter
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,8 +26,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -46,14 +53,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.flit.android.ffi.DeviceInfo
 import dev.flit.android.ffi.PeerInfo
+import dev.flit.android.ffi.ReceivedFile
 
 /**
  * The whole app, one screen.
  *
  * The top card is this phone, because that is the thing a person needs to
- * compare with the other screen. Below it is whoever answered on this network.
- * There is no send button yet; a button that does nothing is worse than a
- * sentence that says what happens next.
+ * compare with the other screen. Below it is whoever answered on this network;
+ * tapping one picks the destination and the bar at the bottom offers the file
+ * picker. A send has one row above the list: a bar, a count, and a way out.
  */
 @Composable
 fun HomeScreen(
@@ -61,10 +69,18 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onRename: (String) -> Unit,
     onNoticeShown: () -> Unit,
+    onSelect: (String) -> Unit,
+    onSend: (List<Uri>) -> Unit,
+    onCancelSend: () -> Unit,
+    onDismissTransfer: () -> Unit,
 ) {
     val colors = FlitPalette.colors
     val context = LocalContext.current
     var renaming by remember { mutableStateOf(false) }
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris -> if (uris.isNotEmpty()) onSend(uris) }
 
     // Renaming restarts the receiver, so the sentence arrives after the engine
     // is already coming back up. A toast keeps it out of the screen's layout.
@@ -94,14 +110,19 @@ fun HomeScreen(
         Header(refreshing = state.refreshing, onRefresh = onRefresh)
 
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(
                 start = 20.dp,
                 end = 20.dp,
-                bottom = 24.dp,
+                bottom = 16.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            val transfer = state.transfer
+            if (transfer != null) {
+                item { TransferCard(transfer, onCancel = onCancelSend, onDismiss = onDismissTransfer) }
+            }
+
             item {
                 val error = state.error
                 val device = state.device
@@ -121,7 +142,23 @@ fun HomeScreen(
                 if (state.peers.isEmpty()) {
                     item { Empty(onNetwork = state.device.discovery == "running") }
                 } else {
-                    items(state.peers, key = { it.deviceId }) { peer -> Peer(peer) }
+                    items(state.peers, key = { it.deviceId }) { peer ->
+                        Peer(
+                            peer = peer,
+                            selected = peer.deviceId == state.selected,
+                            onClick = { onSelect(peer.deviceId) },
+                        )
+                    }
+                }
+
+                if (state.received.isNotEmpty()) {
+                    item {
+                        Spacer(Modifier.height(8.dp))
+                        ReceivedHeader(count = state.received.size)
+                    }
+                    items(state.received, key = { it.name + it.modified }) { file ->
+                        ReceivedRow(file)
+                    }
                 }
 
                 item {
@@ -134,6 +171,15 @@ fun HomeScreen(
                     )
                 }
             }
+        }
+
+        val chosen = state.peers.firstOrNull { it.deviceId == state.selected }
+        if (chosen != null) {
+            SendBar(
+                deviceName = chosen.alias,
+                enabled = state.device != null,
+                onPick = { picker.launch(arrayOf("*/*")) },
+            )
         }
     }
 }
@@ -167,6 +213,71 @@ private fun Header(refreshing: Boolean, onRefresh: () -> Unit) {
             } else {
                 Text("Refresh")
             }
+        }
+    }
+}
+
+/** The send in flight, or the one that just ended. */
+@Composable
+private fun TransferCard(
+    transfer: TransferUi,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = FlitPalette.colors
+    val context = LocalContext.current
+    val size = { bytes: Long -> Formatter.formatShortFileSize(context, bytes) }
+
+    val headline = when {
+        transfer.problem != null && transfer.finished -> "${transfer.filesDone} of ${transfer.files} saved"
+        transfer.problem != null -> "Send failed"
+        transfer.cancelled -> "Cancelled"
+        transfer.finished -> "Sent"
+        else -> transfer.label.ifEmpty { "Sending" }
+    }
+
+    val detail = when {
+        transfer.problem != null -> transfer.problem
+        transfer.cancelled -> "Nothing else will be sent."
+        transfer.finished -> "${transfer.filesDone} of ${transfer.files} files \u00b7 ${size(transfer.total)}"
+        transfer.total > 0L ->
+            "${size(transfer.sent)} of ${size(transfer.total)} \u00b7 ${transfer.filesDone} of ${transfer.files}"
+        else -> "Preparing\u2026"
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = colors.card,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = headline,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = if (transfer.done) onDismiss else onCancel) {
+                    Text(if (transfer.done) "Done" else "Cancel")
+                }
+            }
+
+            if (!transfer.done) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { transfer.fraction },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.ink2,
+            )
         }
     }
 }
@@ -306,17 +417,22 @@ private fun NearbyHeader(count: Int) {
 }
 
 @Composable
-private fun Peer(peer: PeerInfo) {
+private fun Peer(peer: PeerInfo, selected: Boolean, onClick: () -> Unit) {
     val colors = FlitPalette.colors
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = colors.card,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        color = if (selected) colors.accentSoft else colors.card,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, colors.line),
+        border = BorderStroke(
+            1.dp,
+            if (selected) colors.accentLine else colors.line,
+        ),
     ) {
-        Row(modifier = Modifier.padding(14.dp)) {
-            Column {
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = peer.alias,
@@ -336,6 +452,89 @@ private fun Peer(peer: PeerInfo) {
                     fontSize = 11.5.sp,
                     color = colors.ink2,
                 )
+            }
+
+            if (selected) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "Chosen",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceivedHeader(count: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "RECEIVED",
+            style = MaterialTheme.typography.labelSmall,
+            color = FlitPalette.colors.ink2,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = if (count == 1) "1 file" else "$count files",
+            style = MaterialTheme.typography.bodySmall,
+            color = FlitPalette.colors.ink2,
+        )
+    }
+}
+
+@Composable
+private fun ReceivedRow(file: ReceivedFile) {
+    val colors = FlitPalette.colors
+    val context = LocalContext.current
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = colors.card,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = file.name,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = buildString {
+                        append(Formatter.formatShortFileSize(context, file.bytes.toLong()))
+                        if (file.folder) append(" \u00b7 folder")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink2,
+                )
+            }
+        }
+    }
+}
+
+/** Bottom bar: the destination is chosen, so offer the picker. */
+@Composable
+private fun SendBar(deviceName: String, enabled: Boolean, onPick: () -> Unit) {
+    val colors = FlitPalette.colors
+
+    Surface(color = colors.card, border = BorderStroke(1.dp, colors.line)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("To", style = MaterialTheme.typography.labelSmall, color = colors.ink2)
+                Text(
+                    text = deviceName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                )
+            }
+            Button(onClick = onPick, enabled = enabled) {
+                Text("Choose files")
             }
         }
     }

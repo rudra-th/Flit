@@ -31,6 +31,10 @@ class MainActivity : ComponentActivity() {
                     onRefresh = home::refresh,
                     onRename = home::rename,
                     onNoticeShown = home::clearNotice,
+                    onSelect = home::select,
+                    onSend = home::send,
+                    onCancelSend = home::cancelSend,
+                    onDismissTransfer = home::dismissTransfer,
                 )
             }
         }
