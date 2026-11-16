@@ -49,6 +49,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.flit.android.ffi.DeviceInfo
@@ -73,10 +74,13 @@ fun HomeScreen(
     onSend: (List<Uri>) -> Unit,
     onCancelSend: () -> Unit,
     onDismissTransfer: () -> Unit,
+    onUseAddress: (String, String) -> Unit,
+    onClearTarget: () -> Unit,
 ) {
     val colors = FlitPalette.colors
     val context = LocalContext.current
     var renaming by remember { mutableStateOf(false) }
+    var addressing by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -97,6 +101,16 @@ fun HomeScreen(
             onSave = { name ->
                 renaming = false
                 onRename(name)
+            },
+        )
+    }
+
+    if (addressing) {
+        AddressDialog(
+            onDismiss = { addressing = false },
+            onUse = { addr, fingerprint ->
+                addressing = false
+                onUseAddress(addr, fingerprint)
             },
         )
     }
@@ -136,7 +150,10 @@ fun HomeScreen(
             if (state.device != null) {
                 item {
                     Spacer(Modifier.height(8.dp))
-                    NearbyHeader(count = state.peers.size)
+                    NearbyHeader(
+                        count = state.peers.size,
+                        onUseAddress = { addressing = true },
+                    )
                 }
 
                 if (state.peers.isEmpty()) {
@@ -174,11 +191,14 @@ fun HomeScreen(
         }
 
         val chosen = state.peers.firstOrNull { it.deviceId == state.selected }
-        if (chosen != null) {
+        val manual = state.manual
+        if (chosen != null || manual != null) {
             SendBar(
-                deviceName = chosen.alias,
+                deviceName = chosen?.alias ?: manual?.addr.orEmpty(),
+                typed = chosen == null,
                 enabled = state.device != null,
                 onPick = { picker.launch(arrayOf("*/*")) },
+                onClear = onClearTarget,
             )
         }
     }
@@ -396,7 +416,7 @@ private fun RenameDialog(
 private const val MAX_NAME_CHARS = 32
 
 @Composable
-private fun NearbyHeader(count: Int) {
+private fun NearbyHeader(count: Int, onUseAddress: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = "NEARBY",
@@ -413,7 +433,70 @@ private fun NearbyHeader(count: Int) {
             style = MaterialTheme.typography.bodySmall,
             color = FlitPalette.colors.ink2,
         )
+        TextButton(
+            onClick = onUseAddress,
+            contentPadding = PaddingValues(horizontal = 10.dp),
+        ) {
+            Text("Use address", style = MaterialTheme.typography.labelSmall)
+        }
     }
+}
+
+/** The way to reach a device whose announcement never arrived. */
+@Composable
+private fun AddressDialog(
+    onDismiss: () -> Unit,
+    onUse: (String, String) -> Unit,
+) {
+    var addr by remember { mutableStateOf("") }
+    var fingerprint by remember { mutableStateOf("") }
+    val cleanAddr = addr.trim()
+    val cleanFingerprint = fingerprint.trim()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Send to an address") },
+        text = {
+            Column {
+                Text(
+                    text = "For a device on another network, or one whose announcement " +
+                        "did not arrive. The fingerprint is still what proves who answers.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = FlitPalette.colors.ink2,
+                )
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = addr,
+                    onValueChange = { addr = it },
+                    singleLine = true,
+                    label = { Text("Address") },
+                    placeholder = { Text("192.168.1.20:47821") },
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = fingerprint,
+                    onValueChange = { fingerprint = it },
+                    singleLine = true,
+                    label = { Text("Fingerprint") },
+                    placeholder = { Text("64 hex characters") },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = cleanAddr.isNotEmpty() && cleanFingerprint.isNotEmpty(),
+                onClick = { onUse(cleanAddr, cleanFingerprint) },
+            ) {
+                Text("Use")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -515,23 +598,37 @@ private fun ReceivedRow(file: ReceivedFile) {
 
 /** Bottom bar: the destination is chosen, so offer the picker. */
 @Composable
-private fun SendBar(deviceName: String, enabled: Boolean, onPick: () -> Unit) {
+private fun SendBar(
+    deviceName: String,
+    typed: Boolean,
+    enabled: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit,
+) {
     val colors = FlitPalette.colors
 
     Surface(color = colors.card, border = BorderStroke(1.dp, colors.line)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+                .padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("To", style = MaterialTheme.typography.labelSmall, color = colors.ink2)
+                Text(
+                    text = if (typed) "TO ADDRESS" else "TO",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.ink2,
+                )
                 Text(
                     text = deviceName,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+            }
+            TextButton(onClick = onClear) {
+                Text("Change")
             }
             Button(onClick = onPick, enabled = enabled) {
                 Text("Choose files")

@@ -234,17 +234,29 @@ impl MobileEngine {
     /// URIs into its cache first, because the engine streams from files and has
     /// no business holding a content resolver.
     pub fn send_files(&self, device_id: String, paths: Vec<String>) -> Result<u64, MobileError> {
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        let collected = collect_targets(&paths, None).map_err(MobileError::start)?;
-        if collected.targets.is_empty() {
-            return Err(MobileError::start("there is nothing to send"));
-        }
-
-        let id = self
+        let peer = self
             .runtime
-            .block_on(self.engine.send_to_peer(&device_id, collected.targets))
-            .map_err(MobileError::start)?;
-        Ok(id.as_u64())
+            .block_on(self.engine.peers())
+            .into_iter()
+            .find(|peer| peer.device_id == device_id)
+            .ok_or_else(|| MobileError::start("that device is no longer on this network"))?;
+
+        self.start_send(peer.addr, &peer.fingerprint, paths)
+    }
+
+    /// Send files to an address typed by the person, not a discovered peer.
+    ///
+    /// The fingerprint is still required: an address is a location, never an
+    /// identity. This is the phone's version of the CLI's `--to`, and the only
+    /// way to reach a device whose announcement never arrived.
+    pub fn send_files_to(
+        &self,
+        addr: String,
+        fingerprint: String,
+        paths: Vec<String>,
+    ) -> Result<u64, MobileError> {
+        let addr = parse_addr(&addr)?;
+        self.start_send(addr, &fingerprint, paths)
     }
 
     /// Stop a send. False when it had already ended.
@@ -280,6 +292,30 @@ impl MobileEngine {
     /// Stop listening. The object stays readable; it cannot start again.
     pub fn stop(&self) {
         self.runtime.block_on(self.engine.stop());
+    }
+}
+
+/// Small helpers the exported impl shares. Not part of the FFI surface: a
+/// `SocketAddr` is not one of the types UniFFI can carry.
+impl MobileEngine {
+    /// Turn paths into targets and start a send to `addr`.
+    fn start_send(
+        &self,
+        addr: SocketAddr,
+        fingerprint: &str,
+        paths: Vec<String>,
+    ) -> Result<u64, MobileError> {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        let collected = collect_targets(&paths, None).map_err(MobileError::start)?;
+        if collected.targets.is_empty() {
+            return Err(MobileError::start("there is nothing to send"));
+        }
+
+        let id = self
+            .runtime
+            .block_on(self.engine.send_to(addr, fingerprint, collected.targets))
+            .map_err(MobileError::start)?;
+        Ok(id.as_u64())
     }
 }
 
@@ -469,6 +505,24 @@ fn modified_secs(metadata: &std::fs::Metadata) -> u64 {
 fn reachable(bound: SocketAddr) -> String {
     let ip = primary_ipv4().unwrap_or_else(|| bound.ip());
     SocketAddr::new(ip, bound.port()).to_string()
+}
+
+/// Read a typed address, filling in the control port when it was left out.
+///
+/// People copy an address off the other screen, where it is written with a
+/// port; people also type just the IP. Both should work, and a typo should say
+/// what an address looks like instead of "invalid socket address".
+fn parse_addr(raw: &str) -> Result<SocketAddr, MobileError> {
+    let text = raw.trim();
+    if let Ok(addr) = text.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    if let Ok(ip) = text.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, flit_api::TLS_PORT));
+    }
+    Err(MobileError::start(format!(
+        "{text} is not an address like 192.168.1.20:47821"
+    )))
 }
 
 /// The machine's routable IPv4 address, if it has one.

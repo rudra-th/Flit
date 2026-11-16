@@ -37,6 +37,8 @@ class MainActivity : ComponentActivity() {
                     onSend = home::send,
                     onCancelSend = home::cancelSend,
                     onDismissTransfer = home::dismissTransfer,
+                    onUseAddress = home::useAddress,
+                    onClearTarget = home::clearTarget,
                 )
             }
         }

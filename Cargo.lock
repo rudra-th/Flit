@@ -586,6 +586,7 @@ dependencies = [
  "flit-crypto",
  "flit-discovery",
  "if-addrs",
+ "log",
  "thiserror 2.0.21",
  "tokio",
  "uniffi",

@@ -31,6 +31,8 @@ data class HomeState(
     val peers: List<PeerInfo> = emptyList(),
     /** Device id chosen as the destination, if any. */
     val selected: String? = null,
+    /** A typed address chosen as the destination instead of a peer. */
+    val manual: ManualTarget? = null,
     /** The send the row above the list is about, if one is recent. */
     val transfer: TransferUi? = null,
     /** What has landed in the receive folder. */
@@ -41,8 +43,13 @@ data class HomeState(
     val refreshing: Boolean = false,
 )
 
-/** One send, flattened for the row that draws it. */
-data class TransferUi(
+/** A destination the person typed: an address and the key it must prove. */
+data class ManualTarget(
+    val addr: String,
+    val fingerprint: String,
+)
+
+/** One send, flattened for the row that draws it. */data class TransferUi(
     val id: ULong,
     val label: String,
     val sent: Long,
@@ -230,11 +237,28 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Chosen destination, or `null` to choose nothing. */
     fun select(deviceId: String) {
-        _state.update { it.copy(selected = if (it.selected == deviceId) null else deviceId) }
+        _state.update {
+            it.copy(
+                selected = if (it.selected == deviceId) null else deviceId,
+                manual = null,
+            )
+        }
+    }
+
+    /** Use a typed address instead of a discovered device. */
+    fun useAddress(addr: String, fingerprint: String) {
+        _state.update {
+            it.copy(selected = null, manual = ManualTarget(addr, fingerprint))
+        }
+    }
+
+    /** Forget the destination, whichever kind it was. */
+    fun clearTarget() {
+        _state.update { it.copy(selected = null, manual = null) }
     }
 
     /**
-     * Send the files behind `uris` to the chosen device.
+     * Send the files behind `uris` to the chosen destination.
      *
      * A picked file is a `content://` URI the engine cannot open, so each one
      * is copied into the cache first. That costs a copy, which is honest and
@@ -244,7 +268,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     fun send(uris: List<Uri>) {
         val open = engine ?: return
         val target = _state.value.selected
-        if (target == null) {
+        val manual = _state.value.manual
+        if (target == null && manual == null) {
             _state.update { it.copy(notice = "Choose a device first.") }
             return
         }
@@ -256,7 +281,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     uris.mapNotNull { copyIn(outbox, it) }.map { it.absolutePath }
                 }.mapCatching { paths ->
                     if (paths.isEmpty()) error("No file could be read.")
-                    open.sendFiles(target, paths)
+                    when {
+                        target != null -> open.sendFiles(target, paths)
+                        manual != null -> open.sendFilesTo(manual.addr, manual.fingerprint, paths)
+                        else -> error("Choose a device first.")
+                    }
                 }
             }
 
