@@ -152,18 +152,33 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * it can change.
      */
     private fun listen(open: MobileEngine) {
+        val app = getApplication<Application>()
+
         open.watch(object : TransferListener {
             override fun onEvent(event: TransferEvent) {
+                // The row is cheap to update here; the receive folder is read
+                // once, when a send ends, because that is when it changes.
                 val landed = if (event.kind == "finished") {
                     runCatching { open.received() }.getOrDefault(emptyList())
                 } else {
                     null
                 }
+
                 _state.update { current ->
                     current.copy(
                         transfer = merge(current.transfer, event),
                         received = landed ?: current.received,
                     )
+                }
+
+                when (event.kind) {
+                    "started" -> TransferService.started(app, event.label)
+                    "progress" -> TransferService.progress(
+                        app,
+                        event.sent.toLong(),
+                        event.bytes.toLong(),
+                    )
+                    "finished", "failed", "cancelled" -> TransferService.finished(app)
                 }
             }
         })
@@ -295,6 +310,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         poller?.cancel()
+        // The engine is about to abort anything in flight, so the foreground
+        // service has nothing left to justify it.
+        TransferService.finished(getApplication())
         val open = engine
         engine = null
         if (open != null) {
@@ -323,6 +341,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         val open = engine ?: return
         engine = null
         poller?.cancel()
+        TransferService.finished(getApplication())
 
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
