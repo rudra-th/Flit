@@ -582,9 +582,18 @@ fn new_session_id() -> String {
     hex::encode(bytes)
 }
 
-/// Whether a link failure means "this filesystem has no hard links".
+/// Whether a link failure means "hard links are not available here".
+///
+/// `Unsupported` is the POSIX answer. Android is the other one: its sandbox
+/// denies `link` on app data files outright and the kernel reports `EACCES`,
+/// even for two paths the same app owns. A genuinely unwritable destination
+/// still fails at the rename, so treating a denied link as "try the fallback"
+/// hides nothing.
 fn is_link_unsupported(err: &std::io::Error) -> bool {
-    err.kind() == ErrorKind::Unsupported || err.raw_os_error() == Some(1) // ERROR_INVALID_FUNCTION
+    matches!(
+        err.kind(),
+        ErrorKind::Unsupported | ErrorKind::PermissionDenied
+    ) || err.raw_os_error() == Some(1) // ERROR_INVALID_FUNCTION
 }
 
 #[cfg(test)]
@@ -849,5 +858,20 @@ mod tests {
         assert!(!is_sha256(&"a".repeat(63)));
         assert!(!is_sha256(&"g".repeat(64)));
         assert!(!is_sha256(""));
+    }
+
+    /// Android denies `link` on app data with `EACCES`, so that has to count as
+    /// "no hard links here" or nothing can be installed on a phone.
+    #[test]
+    fn a_denied_link_falls_back_to_rename() {
+        assert!(is_link_unsupported(&std::io::Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(is_link_unsupported(&std::io::Error::from(
+            ErrorKind::Unsupported
+        )));
+        assert!(!is_link_unsupported(&std::io::Error::from(
+            ErrorKind::AlreadyExists
+        )));
     }
 }
