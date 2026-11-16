@@ -1,7 +1,7 @@
 # Flit for Android
 
-The phone as a peer: it announces itself, it appears on the computer, and the
-badge on both screens is derived from the same key. Sending and receiving comes
+The phone as a peer: it announces itself under its own name, and it appears on
+the computer with the fingerprint that key pins. Sending and receiving comes
 next; this build deliberately has no button that would do nothing.
 
 ## What is here
@@ -71,8 +71,14 @@ Android hides multicast from apps unless a `MulticastLock` is held, so the app
 takes one while the screen is alive. Without it the phone announces but never
 hears anyone, which looks exactly like a broken receiver.
 
-## The badge
+## The name and the fingerprint
 
-Four emoji and four words, derived from the public key. Compare them with the
-computer's Devices screen: same badge, same device. The name the phone announces
-is `Build.MODEL`, which is the one thing about itself it knows without asking.
+On first run the phone picks two words from `flit-crypto`'s lists — `quiet
+heron`, `slate otter` — and stores them in `name` beside `identity.key`. The
+card's **Change** button edits that file; the receiver is restarted afterwards,
+because the announce carries the name the engine started with. A name is a
+label: it can be anything, including something another device already uses.
+
+Under it the card shows the first 16 hex characters of the fingerprint. That is
+the value the computer pins on the first send, and the only claim about identity
+either screen can make.

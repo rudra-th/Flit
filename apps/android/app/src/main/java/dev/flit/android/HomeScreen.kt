@@ -20,13 +20,20 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -49,8 +56,34 @@ import dev.flit.android.ffi.PeerInfo
  * sentence that says what happens next.
  */
 @Composable
-fun HomeScreen(state: HomeState, onRefresh: () -> Unit) {
+fun HomeScreen(
+    state: HomeState,
+    onRefresh: () -> Unit,
+    onRename: (String) -> Unit,
+    onNoticeShown: () -> Unit,
+) {
     val colors = FlitPalette.colors
+    val context = LocalContext.current
+    var renaming by remember { mutableStateOf(false) }
+
+    // Renaming restarts the receiver, so the sentence arrives after the engine
+    // is already coming back up. A toast keeps it out of the screen's layout.
+    LaunchedEffect(state.notice) {
+        val notice = state.notice ?: return@LaunchedEffect
+        Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
+        onNoticeShown()
+    }
+
+    if (renaming) {
+        RenameDialog(
+            current = state.device?.alias.orEmpty(),
+            onDismiss = { renaming = false },
+            onSave = { name ->
+                renaming = false
+                onRename(name)
+            },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -75,7 +108,7 @@ fun HomeScreen(state: HomeState, onRefresh: () -> Unit) {
                 when {
                     error != null -> Notice(text = error)
                     device == null -> Starting()
-                    else -> Identity(device)
+                    else -> Identity(device, onChangeName = { renaming = true })
                 }
             }
 
@@ -139,7 +172,7 @@ private fun Header(refreshing: Boolean, onRefresh: () -> Unit) {
 }
 
 @Composable
-private fun Identity(device: DeviceInfo) {
+private fun Identity(device: DeviceInfo, onChangeName: () -> Unit) {
     val colors = FlitPalette.colors
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
@@ -158,24 +191,22 @@ private fun Identity(device: DeviceInfo) {
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Spacer(Modifier.weight(1f))
-                Text(
-                    text = device.alias,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.ink2,
-                )
+                TextButton(onClick = onChangeName) {
+                    Text("Change")
+                }
             }
-            Spacer(Modifier.height(10.dp))
             Text(
-                text = device.emoji,
-                fontSize = 26.sp,
-                letterSpacing = 6.sp,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = device.words,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 15.sp,
+                text = device.alias,
+                fontSize = 19.sp,
                 fontWeight = FontWeight.Medium,
+                letterSpacing = 0.2.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = shortFingerprint(device.fingerprint),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.5.sp,
+                color = colors.ink2,
             )
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = colors.accentLine.copy(alpha = 0.7f))
@@ -200,6 +231,58 @@ private fun Identity(device: DeviceInfo) {
         }
     }
 }
+
+/** The first 16 hex characters, as a person would read them off two screens. */
+internal fun shortFingerprint(fingerprint: String): String =
+    fingerprint.take(16).chunked(4).joinToString(" ")
+
+/** Editing the name is a label change, not an identity change: say so once. */
+@Composable
+private fun RenameDialog(
+    current: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var draft by remember(current) { mutableStateOf(current) }
+    val cleaned = draft.trim().split(Regex("\\s+")).joinToString(" ")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Name this phone") },
+        text = {
+            Column {
+                Text(
+                    text = "Other devices show this name. Anyone can type any name, so " +
+                        "Flit pins the fingerprint, not the name.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = FlitPalette.colors.ink2,
+                )
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { if (it.length <= MAX_NAME_CHARS) draft = it },
+                    singleLine = true,
+                    label = { Text("Name") },
+                    supportingText = { Text("${cleaned.length}/$MAX_NAME_CHARS") },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = cleaned.isNotEmpty(),
+                onClick = { onSave(cleaned) },
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+/** Longest name the engine will announce. */
+private const val MAX_NAME_CHARS = 32
 
 @Composable
 private fun NearbyHeader(count: Int) {
@@ -233,8 +316,6 @@ private fun Peer(peer: PeerInfo) {
         border = BorderStroke(1.dp, colors.line),
     ) {
         Row(modifier = Modifier.padding(14.dp)) {
-            Text(text = peer.emoji, fontSize = 18.sp, letterSpacing = 3.sp)
-            Spacer(Modifier.width(12.dp))
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -250,14 +331,7 @@ private fun Peer(peer: PeerInfo) {
                     )
                 }
                 Text(
-                    text = peer.addr,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    color = colors.ink2,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = peer.words,
+                    text = "${shortFingerprint(peer.fingerprint)} \u00b7 ${peer.addr}",
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.5.sp,
                     color = colors.ink2,

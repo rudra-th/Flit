@@ -3,7 +3,6 @@ package dev.flit.android
 import android.app.Application
 import android.content.Context
 import android.net.wifi.WifiManager
-import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.flit.android.ffi.DeviceInfo
@@ -25,6 +24,8 @@ data class HomeState(
     val device: DeviceInfo? = null,
     val peers: List<PeerInfo> = emptyList(),
     val error: String? = null,
+    /** One sentence to show once, then clear. */
+    val notice: String? = null,
     val refreshing: Boolean = false,
 )
 
@@ -61,7 +62,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     // held: without it the phone announces itself but never
                     // hears anyone, which looks like a broken app.
                     multicast = acquireMulticast(app)
-                    MobileEngine.start(alias(), app.filesDir.absolutePath)
+                    MobileEngine.start(app.filesDir.absolutePath)
                 }
             }
 
@@ -122,8 +123,40 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
-    /** The name other devices see: the phone's model, not a random string. */
-    private fun alias(): String = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android phone"
+    /**
+     * Save a new name, then open a fresh receiver.
+     *
+     * The announce carries the name the engine started with, so a rename only
+     * reaches the other screen after a restart. Doing it here keeps that rule
+     * out of the UI, which just calls this and closes its dialog.
+     */
+    fun rename(name: String) {
+        val open = engine ?: return
+        engine = null
+        poller?.cancel()
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { open.rename(name) }
+                    .also {
+                        runCatching { open.stop() }
+                        runCatching { open.destroy() }
+                    }
+            }
+
+            result.onSuccess { saved ->
+                _state.update { it.copy(notice = "This phone is now $saved.") }
+            }.onFailure { err ->
+                _state.update { it.copy(notice = describe(err)) }
+            }
+            start()
+        }
+    }
+
+    /** The screen showed the notice; do not show it again. */
+    fun clearNotice() {
+        _state.update { it.copy(notice = null) }
+    }
 
     private fun acquireMulticast(context: Context): WifiManager.MulticastLock? = try {
         @Suppress("DEPRECATION")

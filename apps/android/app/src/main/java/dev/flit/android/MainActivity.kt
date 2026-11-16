@@ -26,7 +26,12 @@ class MainActivity : ComponentActivity() {
                 val home: HomeViewModel = viewModel()
                 val state by home.state.collectAsStateWithLifecycle()
 
-                HomeScreen(state = state, onRefresh = home::refresh)
+                HomeScreen(
+                    state = state,
+                    onRefresh = home::refresh,
+                    onRename = home::rename,
+                    onNoticeShown = home::clearNotice,
+                )
             }
         }
     }
