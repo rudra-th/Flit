@@ -22,7 +22,7 @@ use std::{
 
 use flit_api::{DeviceType, Info};
 use flit_client::{Client, ClientError, FileOutcome, SavedFile, SendProgress, SendTarget};
-use flit_crypto::{Badge, Identity, badge_of};
+use flit_crypto::Identity;
 use flit_discovery::{Discovery, DiscoveryConfig, Peer, PeerSource, announce_for};
 use flit_server::{Server, ServerConfig, ServerError};
 use tokio::{
@@ -82,8 +82,6 @@ pub struct PeerView {
     pub addr: SocketAddr,
     /// How this device was learned about.
     pub source: PeerSource,
-    /// Emoji and word badge derived from the fingerprint, when it is valid.
-    pub badge: Option<Badge>,
 }
 
 impl PeerView {
@@ -96,7 +94,6 @@ impl PeerView {
             device_type: announce.device_type,
             addr: peer.addr(),
             source: peer.source(),
-            badge: badge_of(&announce.fingerprint),
         }
     }
 }

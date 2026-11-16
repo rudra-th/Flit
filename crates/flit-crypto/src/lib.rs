@@ -7,36 +7,87 @@
 //!   a peer pins during the TLS handshake;
 //! * the **device id** is the first 8 bytes of that hash, short enough to put in
 //!   a log line and long enough not to collide in a household;
-//! * the **safety badge** is four emoji plus four words read from the same hash.
-//!   A name on a LAN is trivial to spoof, a badge is not.
+//! * the **name** is two words (`amber heron`), stored on the device and
+//!   editable. It is a label, not an identity: two screens showing the same
+//!   name prove nothing, which is why the fingerprint is what a peer pins.
 //!
-//! The badge exists in two forms on purpose. Emoji are fast for a sighted user
-//! to compare across two screens; words are what a screen reader can actually
-//! pronounce. The pairing screen shows both and reads the words.
+//! The name is generated once, on first run, and then belongs to the person
+//! using the device. It lives beside the key so the desktop shell, the CLI and
+//! the phone all announce the same one.
 
 mod store;
 mod tls;
 
-pub use store::{IdentityFile, StoreError};
+pub use store::{IdentityFile, NameFile, StoreError};
 pub use tls::{TlsError, TlsIdentity, ed25519_public_key};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
-/// Emoji used for the visual half of the safety badge.
-const BADGE_EMOJI: [&str; 32] = [
-    "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🦉", "🦄", "🐙", "🦋",
-    "🌵", "🌲", "🍁", "🌊", "🔥", "⭐", "🌙", "🍎", "🍋", "🍇", "🍄", "🧭", "🎈", "🔔", "🧩", "🎯",
+/// First half of a device name: qualities, materials, weather.
+#[rustfmt::skip]
+const NAME_QUALIFIERS: &[&str] = &[
+    "amber", "ancient", "arctic", "ashen", "autumn", "azure", "basalt", "bay", "beech", "bitter",
+    "black", "blank", "blue", "bold", "boreal", "braided", "brave", "breezy", "bright", "brisk",
+    "bronze", "brown", "burnt", "calm", "candied", "cedar", "chalk", "cherry", "chestnut",
+    "chilled", "chrome", "cinder", "cinnamon", "clover", "cobalt", "cold", "copper", "coral",
+    "cotton", "crimson", "crisp", "crystal", "damp", "dappled", "dark", "dawn", "deep", "dense",
+    "dewy", "distant", "dry", "dusk", "dusty", "earthen", "eastern", "ebony", "elder", "electric",
+    "ember", "empty", "evening", "faint", "fair", "fallen", "far", "feathered", "felt", "fern",
+    "fiery", "fine", "fir", "first", "flint", "floating", "foggy", "forest", "free", "fresh",
+    "frost", "frozen", "full", "gilded", "glass", "glazed", "golden", "grand", "granite",
+    "gravel", "gray", "green", "gusty", "hazy", "heather", "heavy", "hidden", "high", "hollow",
+    "honey", "humble", "icy", "indigo", "inland", "iron", "ivory", "jade", "keen", "kind", "late",
+    "lavender", "lazy", "leaf", "light", "lilac", "lime", "linen", "little", "lively", "long",
+    "lost", "loud", "low", "lunar", "lush", "maple", "marble", "marsh", "matte", "meadow",
+    "mellow", "mild", "misty", "mixed", "mocha", "modest", "morning", "moss", "muted", "narrow",
+    "nettle", "new", "night", "nimble", "noon", "northern", "oak", "ochre", "olive", "onyx",
+    "open", "opal", "orange", "orchard", "pale", "paper", "patient", "peach", "pearl", "pebble",
+    "pine", "pink", "plain", "plum", "polar", "polished", "pond", "pressed", "prime", "proud",
+    "purple", "quiet", "rain", "rapid", "rare", "raw", "red", "reed", "rich", "ripe", "river",
+    "roasted", "rocky", "rose", "rough", "round", "royal", "ruby", "rugged", "russet", "rust",
+    "rye", "salt", "sand", "sapphire", "satin", "scarlet", "sea", "second", "secret", "shadow",
+    "shallow", "sharp", "shy", "silent", "silk", "silver", "simple", "slate", "slow", "small",
+    "smooth", "snow", "soft", "solar", "solid", "soot", "sour", "southern", "spare", "spring",
+    "spruce", "spun", "star", "steel", "still", "stone", "stormy", "straight", "stray", "strong",
+    "straw", "summer", "sun", "sunny", "tall", "tan", "tapered", "tart", "teal", "tender", "thin",
+    "thorn", "tidy", "tin", "topaz", "tranquil", "true", "tulip", "tundra", "turquoise",
+    "twilight", "umber", "upland", "vale", "velvet", "verdant", "violet", "vivid", "warm", "wax",
+    "weathered", "western", "wheat", "white", "wide", "wild", "willow", "windy", "winter", "wire",
+    "witty", "woven", "yellow", "young", "zinc",
 ];
 
-/// Words used for the spoken half of the safety badge.
-const BADGE_WORDS: [&str; 64] = [
-    "ant", "ash", "bay", "bell", "birch", "blue", "bolt", "brook", "cedar", "chalk", "cliff",
-    "cloud", "coral", "cove", "creek", "crow", "dawn", "deer", "delta", "dew", "dune", "dusk",
-    "eagle", "elm", "ember", "fern", "fig", "fir", "flint", "fog", "fox", "frost", "gale", "glade",
-    "glass", "gold", "grove", "hail", "hare", "hawk", "hazel", "heath", "hill", "holly", "ice",
-    "iris", "jade", "kite", "lake", "lark", "leaf", "lime", "linen", "lotus", "maple", "marsh",
-    "mint", "moss", "oak", "ocean", "olive", "onyx", "opal", "otter",
+/// Second half of a device name: things that flit.
+#[rustfmt::skip]
+const NAME_CREATURES: &[&str] = &[
+    "adder", "albatross", "alpaca", "ant", "ape", "badger", "bat", "bear", "beaver", "bee",
+    "beetle", "bison", "bittern", "boar", "bobcat", "buffalo", "bumblebee", "butterfly", "buzzard",
+    "camel", "capybara", "caribou", "cat", "caterpillar", "chaffinch", "chamois", "cheetah",
+    "chickadee", "chimpanzee", "chipmunk", "cicada", "cobra", "condor", "coot", "cormorant",
+    "cougar", "coyote", "crab", "crane", "crayfish", "cricket", "crocodile", "crow", "curlew",
+    "cuttlefish", "deer", "dingo", "dog", "dolphin", "donkey", "dove", "dragonfly", "duck",
+    "eagle", "eel", "egret", "elk", "emu", "falcon", "ferret", "finch", "firefly", "flamingo",
+    "fly", "fox", "frog", "gazelle", "gecko", "gnat", "goat", "goldfinch", "goose", "gopher",
+    "gorilla", "goshawk", "grasshopper", "grebe", "grouse", "guillemot", "gull", "haddock",
+    "hamster", "hare", "harrier", "hawk", "hedgehog", "heron", "herring", "hippo", "hornet",
+    "horse", "hound", "hummingbird", "hyena", "ibex", "ibis", "iguana", "jackal", "jackdaw",
+    "jaguar", "jay", "jellyfish", "kangaroo", "kestrel", "kingfisher", "kite", "kiwi", "koala",
+    "ladybird", "lamprey", "lapwing", "lemming", "lemur", "leopard", "limpet", "lion", "lizard",
+    "llama", "lobster", "locust", "loon", "lynx", "macaw", "magpie", "mallard", "mamba",
+    "manatee", "manta", "marmot", "marten", "martin", "mastiff", "mayfly", "meerkat", "merganser",
+    "mink", "minnow", "mockingbird", "mole", "mongoose", "monkey", "moose", "moth", "mouse",
+    "mule", "mussel", "newt", "nightjar", "ocelot", "octopus", "opossum", "orca", "oriole",
+    "osprey", "ostrich", "otter", "owl", "ox", "oyster", "panda", "panther", "parrot",
+    "partridge", "peacock", "pelican", "penguin", "perch", "petrel", "pheasant", "pigeon", "pike",
+    "plover", "pony", "porcupine", "porpoise", "possum", "prawn", "puffin", "puma", "python",
+    "quail", "quokka", "rabbit", "raccoon", "ram", "raven", "ray", "reindeer", "rhino", "robin",
+    "rook", "rooster", "salmon", "sandpiper", "sardine", "seagull", "seal", "serval", "shark",
+    "sheep", "shrew", "shrimp", "skunk", "sloth", "slug", "snail", "snake", "snipe", "sparrow",
+    "spider", "squid", "squirrel", "starling", "stoat", "stork", "sturgeon", "swallow", "swan",
+    "swift", "tadpole", "tapir", "tern", "thrush", "tick", "tiger", "toad", "toucan", "trout",
+    "tuna", "turtle", "viper", "vole", "vulture", "wallaby", "walrus", "warbler", "wasp",
+    "weasel", "whale", "whippet", "wildebeest", "wolf", "wombat", "woodpecker", "worm", "wren",
+    "yak", "zebra",
 ];
 
 /// Things that can go wrong while creating an identity.
@@ -115,24 +166,6 @@ impl Identity {
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         self.signing.sign(message).to_bytes()
     }
-
-    /// The four-emoji half of the safety badge.
-    /// The four-emoji half of the safety badge.
-    #[must_use]
-    pub fn badge_emoji(&self) -> String {
-        badge_of(&self.fingerprint())
-            .expect("a fingerprint we just produced is always decodable")
-            .emoji
-    }
-
-    /// The four-word half of the safety badge, for screen readers and for
-    /// reading out loud over a phone call.
-    #[must_use]
-    pub fn badge_words(&self) -> String {
-        badge_of(&self.fingerprint())
-            .expect("a fingerprint we just produced is always decodable")
-            .words
-    }
 }
 
 impl std::fmt::Debug for Identity {
@@ -150,42 +183,40 @@ pub fn fingerprint_of(public_key: &[u8; 32]) -> String {
     hex::encode(Sha256::digest(public_key))
 }
 
-/// The safety badge: four emoji and four words, both derived from the
-/// fingerprint so two screens showing the same device show the same badge.
+/// The longest display name Flit will announce.
+pub const MAX_NAME_CHARS: usize = 32;
+
+/// A fresh display name: two words, e.g. `amber heron`.
 ///
-/// The words exist for screen readers and for reading down a phone line. The
-/// emoji exist because comparing four pictures is faster than comparing 64 hex
-/// characters, and speed is what makes people actually check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Badge {
-    /// Four emoji, no separator.
-    pub emoji: String,
-    /// Four hyphen-separated words.
-    pub words: String,
+/// A starting point for a first run, not an identity. The name is stored and
+/// the person may change it, so it carries no proof; the key does.
+pub fn random_name() -> Result<String, CryptoError> {
+    let mut bytes = [0u8; 4];
+    getrandom::getrandom(&mut bytes)?;
+    Ok(name_from_bytes(bytes))
 }
 
-/// Derive the badge from a 64-character fingerprint.
+/// Pick a name from four bytes of randomness.
+fn name_from_bytes(bytes: [u8; 4]) -> String {
+    let qualifier = NAME_QUALIFIERS
+        [usize::from(u16::from_be_bytes([bytes[0], bytes[1]])) % NAME_QUALIFIERS.len()];
+    let creature = NAME_CREATURES
+        [usize::from(u16::from_be_bytes([bytes[2], bytes[3]])) % NAME_CREATURES.len()];
+    format!("{qualifier} {creature}")
+}
+
+/// Clean a name someone typed: trim the ends, collapse runs of spaces, and
+/// refuse the empty string or anything longer than [`MAX_NAME_CHARS`].
 ///
-/// Returns `None` for anything that is not a SHA-256 in hex, so a truncated
-/// value copied out of a log can never produce a plausible-looking badge.
+/// Returns `None` when nothing usable is left, so callers keep the old name
+/// instead of announcing a blank one.
 #[must_use]
-pub fn badge_of(fingerprint: &str) -> Option<Badge> {
-    let bytes = hex::decode(fingerprint.trim()).ok()?;
-    if bytes.len() != 32 {
+pub fn clean_name(raw: &str) -> Option<String> {
+    let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
         return None;
     }
-
-    let emoji: String = bytes[0..4]
-        .iter()
-        .map(|b| BADGE_EMOJI[usize::from(*b) % BADGE_EMOJI.len()])
-        .collect();
-    let words = bytes[4..8]
-        .iter()
-        .map(|b| BADGE_WORDS[usize::from(*b) % BADGE_WORDS.len()])
-        .collect::<Vec<_>>()
-        .join("-");
-
-    Some(Badge { emoji, words })
+    Some(name)
 }
 
 /// Verify a detached signature against a public key.
@@ -258,27 +289,38 @@ mod tests {
     }
 
     #[test]
-    fn badge_has_four_emoji_and_four_words() {
-        let id = fixed();
-        assert_eq!(id.badge_emoji().chars().count(), 4);
-        assert_eq!(id.badge_words().split('-').count(), 4);
-        assert_eq!(id.badge_emoji(), fixed().badge_emoji());
-        assert_eq!(id.badge_words(), fixed().badge_words());
+    fn a_generated_name_is_two_words_from_the_lists() {
+        for seed in 0u8..64 {
+            let name = name_from_bytes([seed, seed.wrapping_mul(7), seed.wrapping_add(3), seed]);
+            let parts: Vec<&str> = name.split(' ').collect();
+            assert_eq!(parts.len(), 2, "{name}");
+            assert!(NAME_QUALIFIERS.contains(&parts[0]), "{name}");
+            assert!(NAME_CREATURES.contains(&parts[1]), "{name}");
+        }
+        let fresh = random_name().unwrap();
+        assert_eq!(fresh.split(' ').count(), 2, "{fresh}");
     }
 
     #[test]
-    fn a_badge_can_be_derived_from_a_fingerprint_alone() {
-        let id = fixed();
-        let badge = badge_of(&id.fingerprint()).unwrap();
-        assert_eq!(badge.emoji, id.badge_emoji());
-        assert_eq!(badge.words, id.badge_words());
-        assert_eq!(badge.emoji.chars().count(), 4);
+    fn a_typed_name_is_cleaned_before_it_is_used() {
+        assert_eq!(clean_name("  amber   heron "), Some("amber heron".into()));
+        assert_eq!(clean_name("Rhea's laptop"), Some("Rhea's laptop".into()));
+        assert_eq!(clean_name(" \t\n "), None);
+        assert_eq!(clean_name(&"a".repeat(MAX_NAME_CHARS + 1)), None);
+        assert!(clean_name(&"a".repeat(MAX_NAME_CHARS)).is_some());
     }
 
     #[test]
-    fn a_badge_is_refused_for_anything_that_is_not_a_fingerprint() {
-        for bad in ["", "abc", &"a".repeat(63), &format!("{}z", "a".repeat(63))] {
-            assert!(badge_of(bad).is_none(), "{bad:?}");
+    fn the_word_lists_are_long_enough_and_clean() {
+        for list in [NAME_QUALIFIERS, NAME_CREATURES] {
+            assert!(list.len() >= 200, "only {} words", list.len());
+            let unique: std::collections::HashSet<_> = list.iter().collect();
+            assert_eq!(unique.len(), list.len(), "a word repeats");
+            assert!(
+                list.iter()
+                    .all(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == ' ')),
+                "words are lowercase"
+            );
         }
     }
 

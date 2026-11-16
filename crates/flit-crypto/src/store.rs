@@ -1,8 +1,9 @@
-//! Where the identity lives between runs.
+//! Where the identity and the display name live between runs.
 //!
 //! The fingerprint is only useful if it does not change every launch, so the
 //! secret has to be persisted. For M1 that is a single file under the user's
-//! configuration directory, created with owner-only permissions.
+//! configuration directory, created with owner-only permissions. The display
+//! name sits beside it, because it has to survive a restart too.
 //!
 //! This is a deliberate, documented limitation: the platform keychain is better
 //! (it can refuse export on some systems) and lands in M7 hardening. Until
@@ -15,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{CryptoError, Identity};
+use crate::{CryptoError, Identity, clean_name, random_name};
 
 /// First line of an identity file. Bumping this is how a future format change
 /// stays recognizable instead of being parsed as garbage.
@@ -63,6 +64,9 @@ pub enum StoreError {
     /// The operating system refused to produce randomness.
     #[error(transparent)]
     Entropy(#[from] CryptoError),
+    /// The name was blank, or longer than a peer list can show.
+    #[error("a display name has to be {0} to {1} characters")]
+    BadName(usize, usize),
 }
 
 /// An identity file at a known path.
@@ -193,6 +197,90 @@ impl IdentityFile {
     }
 }
 
+/// The display name at a known path, beside the identity.
+///
+/// A name is not secret and proves nothing; it is text the person chooses. It
+/// lives next to the key so the desktop shell, the CLI and the phone announce
+/// the same one.
+#[derive(Debug, Clone)]
+pub struct NameFile {
+    path: PathBuf,
+}
+
+impl NameFile {
+    /// Use `path` as the name file.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// The name that belongs to `identity`: `name`, in the same folder.
+    #[must_use]
+    pub fn beside(identity: &IdentityFile) -> Self {
+        Self::new(identity.path().with_file_name("name"))
+    }
+
+    /// The file this handle points at.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Read the name, or `None` when there is no usable one.
+    ///
+    /// A file containing only whitespace, or something longer than a peer list
+    /// can show, reads as absent rather than as a name.
+    pub fn load(&self) -> Result<Option<String>, StoreError> {
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(StoreError::Read {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        };
+        Ok(clean_name(&text))
+    }
+
+    /// Read the name, generating two fresh words on first run.
+    pub fn load_or_create(&self) -> Result<String, StoreError> {
+        if let Some(name) = self.load()? {
+            return Ok(name);
+        }
+        let name = random_name()?;
+        self.save(&name)
+    }
+
+    /// Replace the name atomically, and return the cleaned form that was kept.
+    ///
+    /// Refuses a blank name or one longer than [`MAX_NAME_CHARS`]; the caller
+    /// keeps the old name rather than announcing an empty row.
+    pub fn save(&self, name: &str) -> Result<String, StoreError> {
+        let name = clean_name(name)
+            .ok_or(StoreError::BadName(1, crate::MAX_NAME_CHARS))?;
+
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|source| StoreError::Write {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let temporary = self.path.with_extension("tmp");
+        fs::write(&temporary, format!("{name}\n")).map_err(|source| StoreError::Write {
+            path: temporary.clone(),
+            source,
+        })?;
+        fs::rename(&temporary, &self.path).map_err(|source| StoreError::Write {
+            path: self.path.clone(),
+            source,
+        })?;
+        Ok(name)
+    }
+}
+
 /// Open a file that only the current user may read.
 fn open_private(path: &Path) -> std::io::Result<fs::File> {
     let mut options = OpenOptions::new();
@@ -303,6 +391,48 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_name_is_created_once_then_reused() {
+        let identity = IdentityFile::new(scratch("name-once"));
+        let name = NameFile::beside(&identity);
+
+        let first = name.load_or_create().unwrap();
+        assert_eq!(first.split(' ').count(), 2, "{first}");
+        assert_eq!(name.load_or_create().unwrap(), first);
+        assert_eq!(name.load().unwrap().as_deref(), Some(first.as_str()));
+
+        let _ = std::fs::remove_dir_all(identity.path().parent().unwrap());
+    }
+
+    #[test]
+    fn a_saved_name_replaces_the_old_one() {
+        let identity = IdentityFile::new(scratch("name-replace"));
+        let name = NameFile::beside(&identity);
+
+        assert_eq!(name.save("  Rhea's   laptop ").unwrap(), "Rhea's laptop");
+        assert_eq!(name.load().unwrap().as_deref(), Some("Rhea's laptop"));
+
+        assert!(matches!(name.save(" \t "), Err(StoreError::BadName(_, _))));
+        assert!(matches!(
+            name.save(&"a".repeat(crate::MAX_NAME_CHARS + 1)),
+            Err(StoreError::BadName(_, _))
+        ));
+        // A refused name leaves the old one in place.
+        assert_eq!(name.load().unwrap().as_deref(), Some("Rhea's laptop"));
+
+        let _ = std::fs::remove_dir_all(identity.path().parent().unwrap());
+    }
+
+    #[test]
+    fn an_unusable_name_file_reads_as_absent() {
+        let identity = IdentityFile::new(scratch("name-garbage"));
+        let name = NameFile::beside(&identity);
+        std::fs::create_dir_all(identity.path().parent().unwrap()).unwrap();
+        std::fs::write(name.path(), "   \n").unwrap();
+        assert!(name.load().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(identity.path().parent().unwrap());
     }
 
     #[cfg(unix)]
