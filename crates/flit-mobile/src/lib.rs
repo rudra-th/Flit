@@ -8,17 +8,18 @@
 
 use std::{
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use flit_api::DeviceType;
-use flit_core::{DiscoveryState, Engine, EngineConfig};
+use flit_core::{DiscoveryState, Engine, EngineConfig, Event, TransferId, collect_targets};
 use flit_crypto::{IdentityFile, NameFile};
+use tokio::sync::broadcast::error::RecvError;
 
 uniffi::setup_scaffolding!();
 
-/// What can stop the phone from joining the network.
+/// What stopped a start, a rename or a send.
 ///
 /// One variant, one sentence: the UI's job is to show it, not to branch on it.
 /// `flat_error` keeps the Kotlin side a plain exception whose message is the
@@ -37,6 +38,48 @@ impl MobileError {
             reason: err.to_string(),
         }
     }
+}
+
+/// One step of a send, flattened for Kotlin.
+///
+/// A record instead of a variant per event: the UI draws one row with a label,
+/// a bar and a button, and a flat shape keeps that row from branching on six
+/// generated classes.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TransferEvent {
+    /// `started`, `progress`, `finished`, `failed` or `cancelled`.
+    pub kind: String,
+    /// Which send, as returned by [`MobileEngine::send_files`].
+    pub id: u64,
+    /// A short name for the whole send.
+    pub label: String,
+    /// Why the send failed, or the first file the receiver refused, when
+    /// `kind` is `failed` or `finished`. Empty otherwise.
+    pub detail: String,
+    pub bytes: u64,
+    pub sent: u64,
+    pub files: u32,
+    pub files_done: u32,
+}
+
+/// A file or folder that landed in the receive folder.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReceivedFile {
+    pub name: String,
+    /// Bytes on disk; for a folder, the sum of its files.
+    pub bytes: u64,
+    /// Seconds since the Unix epoch, for sorting.
+    pub modified: u64,
+    pub folder: bool,
+}
+
+/// What the app is told about a send while it happens.
+///
+/// Called on a background thread, never on the main one: a UI must post to its
+/// own loop before touching state.
+#[uniffi::export(callback_interface)]
+pub trait TransferListener: Send + Sync {
+    fn on_event(&self, event: TransferEvent);
 }
 
 /// This phone, as another device sees it.
@@ -162,6 +205,66 @@ impl MobileEngine {
             .collect()
     }
 
+    /// Listen for send progress until the engine stops.
+    ///
+    /// One listener per engine: the app attaches its callback once and keeps
+    /// the object alive for as long as it wants events.
+    pub fn watch(&self, listener: Box<dyn TransferListener>) {
+        let mut events = self.engine.subscribe();
+        self.runtime.spawn(async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    // A slow listener skipped some ticks; the next one carries
+                    // absolute numbers, so nothing is lost that a bar needs.
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
+                };
+                if let Some(event) = transfer_event(event) {
+                    listener.on_event(event);
+                }
+            }
+        });
+    }
+
+    /// Send files to a device from the peer list, and return the send's id.
+    ///
+    /// `paths` are real filesystem paths. The app copies picked `content://`
+    /// URIs into its cache first, because the engine streams from files and has
+    /// no business holding a content resolver.
+    pub fn send_files(&self, device_id: String, paths: Vec<String>) -> Result<u64, MobileError> {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        let collected = collect_targets(&paths, None).map_err(MobileError::start)?;
+        if collected.targets.is_empty() {
+            return Err(MobileError::start("there is nothing to send"));
+        }
+
+        let id = self
+            .runtime
+            .block_on(self.engine.send_to_peer(&device_id, collected.targets))
+            .map_err(MobileError::start)?;
+        Ok(id.as_u64())
+    }
+
+    /// Stop a send. False when it had already ended.
+    pub fn cancel(&self, id: u64) -> bool {
+        let transfer = self
+            .runtime
+            .block_on(self.engine.running())
+            .into_iter()
+            .find(|transfer| transfer.as_u64() == id);
+
+        match transfer {
+            Some(transfer) => self.runtime.block_on(self.engine.cancel(transfer)),
+            None => false,
+        }
+    }
+
+    /// What has landed in the receive folder, newest first.
+    pub fn received(&self) -> Vec<ReceivedFile> {
+        list_received(self.engine.root())
+    }
+
     /// Change the name other devices see, and return the cleaned form kept.
     ///
     /// The announce carries the name the receiver was started with, so the app
@@ -177,6 +280,132 @@ impl MobileEngine {
     pub fn stop(&self) {
         self.runtime.block_on(self.engine.stop());
     }
+}
+
+/// Turn an engine event into the flat record Kotlin draws, or `None` for
+/// events the transfer row has no use for.
+fn transfer_event(event: Event) -> Option<TransferEvent> {
+    let blank = |kind: &str, id: TransferId| TransferEvent {
+        kind: kind.to_string(),
+        id: id.as_u64(),
+        label: String::new(),
+        detail: String::new(),
+        bytes: 0,
+        sent: 0,
+        files: 0,
+        files_done: 0,
+    };
+
+    match event {
+        Event::TransferStarted {
+            id,
+            label,
+            files,
+            bytes,
+            ..
+        } => Some(TransferEvent {
+            label,
+            files: files as u32,
+            bytes,
+            ..blank("started", id)
+        }),
+        Event::TransferProgress {
+            id,
+            sent,
+            total,
+            files_done,
+            files_total,
+        } => Some(TransferEvent {
+            bytes: total,
+            sent,
+            files: files_total as u32,
+            files_done: files_done as u32,
+            ..blank("progress", id)
+        }),
+        Event::TransferFinished { id, items } => {
+            let failed = items.iter().find(|item| item.error.is_some());
+            Some(TransferEvent {
+                detail: failed
+                    .and_then(|item| item.error.clone())
+                    .unwrap_or_default(),
+                sent: items.iter().map(|item| item.bytes).sum(),
+                files: items.len() as u32,
+                files_done: items.iter().filter(|item| item.error.is_none()).count() as u32,
+                ..blank("finished", id)
+            })
+        }
+        Event::TransferFailed { id, reason } => Some(TransferEvent {
+            detail: reason,
+            ..blank("failed", id)
+        }),
+        Event::TransferCancelled { id } => Some(blank("cancelled", id)),
+        Event::PeerSeen(_) | Event::PeerLost { .. } | Event::DiscoveryUnavailable { .. } => None,
+    }
+}
+
+/// The receive folder, newest first. Partial files are not shown: a `.part`
+/// with no name beside it is work in progress, not a file that arrived.
+fn list_received(root: &Path) -> Vec<ReceivedFile> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut files: Vec<ReceivedFile> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".part") {
+                return None;
+            }
+            let metadata = entry.metadata().ok()?;
+            let folder = metadata.is_dir();
+            Some(ReceivedFile {
+                bytes: if folder {
+                    folder_size(&entry.path())
+                } else {
+                    metadata.len()
+                },
+                modified: modified_secs(&metadata),
+                name,
+                folder,
+            })
+        })
+        .collect();
+
+    files.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    files
+}
+
+/// Bytes under `path`, summed. A folder the app cannot read counts as zero
+/// rather than failing the whole list.
+fn folder_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| {
+            entry.metadata().map_or(0, |metadata| {
+                if metadata.is_dir() {
+                    folder_size(&entry.path())
+                } else {
+                    metadata.len()
+                }
+            })
+        })
+        .sum()
+}
+
+fn modified_secs(metadata: &std::fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// The address another device should dial, not the `0.0.0.0` the listener binds.
