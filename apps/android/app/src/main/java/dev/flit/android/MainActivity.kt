@@ -4,9 +4,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
  * One activity, one screen. The engine lives in [HomeViewModel], which is why
@@ -14,6 +14,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * peer for two seconds.
  */
 class MainActivity : ComponentActivity() {
+    /** Held by the activity, not the composition, so [onResume] can reach it. */
+    private val home: HomeViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -23,12 +26,11 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             FlitTheme {
-                val home: HomeViewModel = viewModel()
                 val state by home.state.collectAsStateWithLifecycle()
 
                 HomeScreen(
                     state = state,
-                    onRefresh = home::refresh,
+                    onRefresh = home::refreshAll,
                     onRename = home::rename,
                     onNoticeShown = home::clearNotice,
                     onSelect = home::select,
@@ -38,5 +40,15 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    /**
+     * A file can land while the screen is off or another app is in front, and
+     * the engine has no event for a receive. Re-reading the folder here is what
+     * makes the list match the disk when someone comes back.
+     */
+    override fun onResume() {
+        super.onResume()
+        home.refreshReceived()
     }
 }

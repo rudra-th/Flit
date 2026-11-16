@@ -133,6 +133,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Read the engine and the receive folder once: what the header offers. */
+    fun refreshAll() {
+        refresh()
+        refreshReceived()
+    }
+
     private fun poll() {
         poller?.cancel()
         poller = viewModelScope.launch {
@@ -148,8 +154,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      *
      * Events arrive on a Rust thread. `MutableStateFlow.update` is safe there,
      * so nothing is posted back to the main loop just to store a number; the
-     * receive folder is read the moment a send finishes, which is the only time
-     * it can change.
+     * receive folder is re-read when one of this phone's own sends ends, and
+     * again whenever the screen comes back, because an incoming send has no
+     * event of its own.
      */
     private fun listen(open: MobileEngine) {
         val app = getApplication<Application>()
