@@ -140,6 +140,7 @@ impl MobileEngine {
         let dir = PathBuf::from(data_dir);
         std::fs::create_dir_all(&dir)
             .map_err(|err| MobileError::start(format!("cannot use the app folder: {err}")))?;
+        install_logger(&dir);
 
         let store = IdentityFile::new(dir.join("identity.key"));
         let identity = store
@@ -282,6 +283,60 @@ impl MobileEngine {
     }
 }
 
+/// Where the engine's own log lines go, set once per process.
+static LOG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The app's log file, appended to by the `log` crate.
+///
+/// Android sends a process's stdout nowhere, so the only way to see why a
+/// receive was refused on a phone is to write the lines down in a file the
+/// shell can read with `run-as`. The engine is already full of useful
+/// `warn!`/`debug!` calls; this gives them somewhere to land.
+struct FileLogger;
+
+impl log::Log for FileLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Debug
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let Some(path) = LOG_PATH.get() else {
+            return;
+        };
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let line = format!("{seconds} {:<5} {}\n", record.level(), record.args());
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: FileLogger = FileLogger;
+
+/// Cap the log so a long-lived app cannot fill the data directory.
+const MAX_LOG_BYTES: u64 = 512 * 1024;
+
+/// Point the `log` crate at `dir/flit.log`. Safe to call more than once.
+fn install_logger(dir: &Path) {
+    let path = dir.join("flit.log");
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_LOG_BYTES) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if LOG_PATH.set(path).is_ok() {
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Debug);
+    }
+}
+
 /// Turn an engine event into the flat record Kotlin draws, or `None` for
 /// events the transfer row has no use for.
 fn transfer_event(event: Event) -> Option<TransferEvent> {
@@ -354,7 +409,9 @@ fn list_received(root: &Path) -> Vec<ReceivedFile> {
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".part") {
+            // `.flit` is the engine's own staging area and `.part` files are
+            // work in progress; neither is something that arrived.
+            if name.starts_with('.') || name.ends_with(".part") {
                 return None;
             }
             let metadata = entry.metadata().ok()?;

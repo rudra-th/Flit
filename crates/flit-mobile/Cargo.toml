@@ -24,6 +24,7 @@ flit-core = { workspace = true }
 flit-crypto = { workspace = true }
 flit-discovery = { workspace = true }
 if-addrs = "0.13"
+log = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 uniffi = "0.29"

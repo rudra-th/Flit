@@ -208,7 +208,8 @@ impl Session {
                 file.write_all(text.as_bytes())?;
                 file.sync_all()
             });
-            if written.is_err() {
+            if let Err(err) = written {
+                log::warn!("could not write {}: {err}", item.name);
                 self.items.insert(item.id.clone(), item);
                 return Commit::Incomplete;
             }
@@ -217,12 +218,23 @@ impl Session {
         }
 
         if !item.is_complete() {
+            log::warn!(
+                "{} is incomplete: {} of {} bytes",
+                item.name,
+                item.received,
+                item.size
+            );
             self.items.insert(item.id.clone(), item);
             return Commit::Incomplete;
         }
 
         let digest = hex::encode(item.hasher.clone().finalize());
         if digest != item.sha256 {
+            log::warn!(
+                "{} failed verification: got {digest}, expected {}",
+                item.name,
+                item.sha256
+            );
             // The sender can re-send this item from zero; nothing is kept.
             let _ = item.reset();
             self.items.insert(item.id.clone(), item);
@@ -358,10 +370,12 @@ impl Sessions {
         // thrown away; the first `PUT` resumes from what the receiver has.
         let key = manifest_key(&manifest);
         if let Some(adopted) = self.adopt(&key, &manifest).await {
+            log::debug!("adopted an open session for the same manifest");
             return Ok(adopted);
         }
 
         let id = new_session_id();
+        log::debug!("opening session {id} for {} items", manifest.len());
         let mut session =
             Session::create(&self.root, id.clone(), key).map_err(|_| ErrorCode::Internal)?;
         let mut accepted = Vec::new();
