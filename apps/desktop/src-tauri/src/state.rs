@@ -47,8 +47,14 @@ impl Shell {
             .load_or_create()
             .map_err(|err| err.to_string())?;
 
+        // The desktop has no consent sheet yet, so it keeps the behaviour it had
+        // before offers existed: accept everything. The Android shell asks the
+        // person and remembers trusted devices; when the desktop grows a sheet,
+        // replace this with its own persisted policy. Installed in the config so
+        // it is in force before the receiver binds and can be asked.
         let config = EngineConfig {
             alias: name,
+            auto_accept: true,
             ..EngineConfig::default()
         };
         let engine = tauri::async_runtime::block_on(Engine::start(Arc::new(identity), config))
@@ -150,6 +156,9 @@ impl Inner {
                 self.data().close(id, Ending::Cancelled);
                 Some(EngineEvent::TransferCancelled { id })
             }
+            // Offers never reach the window: the desktop accepts them through
+            // its policy above, and there is no sheet to draw.
+            Event::IncomingOffer { .. } | Event::OfferClosed { .. } => None,
         }
     }
 }

@@ -14,17 +14,17 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use flit_api::{DeviceType, Info};
+use flit_api::{DeviceType, Info, ItemKind, ManifestItem};
 use flit_client::{Client, ClientError, FileOutcome, SavedFile, SendProgress, SendTarget};
 use flit_crypto::Identity;
 use flit_discovery::{Discovery, DiscoveryConfig, Peer, PeerSource, announce_for};
-use flit_server::{Server, ServerConfig, ServerError};
+use flit_server::{Offer, OfferDecision, OfferGate, Server, ServerConfig, ServerError};
 use tokio::{
     sync::{Mutex, broadcast, oneshot},
     task::JoinHandle,
@@ -48,6 +48,16 @@ const PROGRESS_TICK: Duration = Duration::from_millis(200);
 
 /// How long [`Engine::stop`] waits for the listener to close.
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long an incoming offer waits for a person to answer it.
+///
+/// After this the sender is told nobody answered, the sheet closes, and the
+/// receiver goes back to being available. Long enough to read a file list,
+/// short enough that a sender is not left staring at a dead screen.
+pub const OFFER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The sentence shown when a sender did not announce a usable name.
+const UNNAMED_SENDER: &str = "A nearby device";
 
 /// Identifier for one send, unique within an engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -177,6 +187,85 @@ impl ItemOutcome {
     }
 }
 
+/// Identifier of an incoming offer, unique for the engine's lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OfferId(u64);
+
+impl OfferId {
+    /// The raw number, for shells that carry it as a plain integer.
+    #[must_use]
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Rebuild an id from the number a shell carried across a boundary.
+    ///
+    /// Only a number taken from an [`Event::IncomingOffer`] names an offer;
+    /// anything else answers nothing and returns false.
+    #[must_use]
+    pub fn from_raw(number: u64) -> Self {
+        Self(number)
+    }
+}
+
+/// Who is asking to send something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferSender {
+    /// Fingerprint proven by the sender's client certificate.
+    ///
+    /// This is the proof, and the only key consent is ever remembered under.
+    /// `None` means the sender presented no certificate, so trust can never be
+    /// remembered for it.
+    pub fingerprint: Option<String>,
+    /// Claimed device id. Matches discovery when the sender is also announcing.
+    pub device_id: Option<String>,
+    /// Claimed display name, or [`UNNAMED_SENDER`] when none was given.
+    pub alias: String,
+}
+
+/// One thing inside an offer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferedItem {
+    /// Sender's opaque id, used again in [`Engine::answer_offer`].
+    pub id: String,
+    /// Relative name it would be saved under.
+    pub name: String,
+    /// Payload bytes.
+    pub size: u64,
+    /// File or inline text.
+    pub kind: ItemKind,
+}
+
+impl OfferedItem {
+    fn from_manifest(item: &ManifestItem) -> Self {
+        Self {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            size: item_size(item),
+            kind: item.kind,
+        }
+    }
+}
+
+/// How an incoming offer ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferOutcome {
+    /// The person accepted at least one item.
+    Accepted,
+    /// The person declined it, or answered with no items.
+    Declined,
+    /// Nobody answered before [`OFFER_TIMEOUT`].
+    TimedOut,
+}
+
+/// Payload bytes an offered item represents, counting inline text.
+fn item_size(item: &ManifestItem) -> u64 {
+    match item.kind {
+        ItemKind::Text => item.text.as_deref().map_or(0, |text| text.len() as u64),
+        ItemKind::File => item.size,
+    }
+}
+
 /// Something a UI may want to show. Every variant is cheap to clone.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -191,6 +280,28 @@ pub enum Event {
     DiscoveryUnavailable {
         /// Why, in words a support issue can quote.
         reason: String,
+    },
+    /// Another device wants to send something and is waiting for an answer.
+    ///
+    /// The sender is blocked in its prepare request until the person answers,
+    /// the offer times out, or auto-accept answers it without a sheet. Call
+    /// [`Engine::answer_offer`] with the ids that should be accepted.
+    IncomingOffer {
+        /// Which offer, for the answer.
+        id: OfferId,
+        /// Who is asking. The fingerprint, not the name, is the identity.
+        sender: OfferSender,
+        /// Everything the sender wants to send, in order.
+        items: Vec<OfferedItem>,
+        /// Total payload bytes.
+        bytes: u64,
+    },
+    /// An incoming offer reached its final answer.
+    OfferClosed {
+        /// Which offer.
+        id: OfferId,
+        /// What happened.
+        outcome: OfferOutcome,
     },
     /// A send was handed to the network.
     TransferStarted {
@@ -275,6 +386,14 @@ pub struct EngineConfig {
     pub root: PathBuf,
     /// PIN required from senders, if any.
     pub pin: Option<String>,
+    /// Accept every incoming offer without asking.
+    ///
+    /// Installed before the receiver binds, so a device that sends the moment
+    /// this app appears is answered by policy rather than waiting for a sheet
+    /// that does not exist yet.
+    pub auto_accept: bool,
+    /// Fingerprints accepted on their own even when [`Self::auto_accept`] is off.
+    pub trusted: Vec<String>,
     /// Discovery settings, or `None` to run without it.
     ///
     /// `None` is what tests use, and what a headless receiver can use on a
@@ -293,6 +412,8 @@ impl Default for EngineConfig {
             bind: server.bind,
             root: server.root,
             pin: server.pin,
+            auto_accept: false,
+            trusted: Vec::new(),
             discovery: Some(DiscoveryConfig::default()),
         }
     }
@@ -313,6 +434,11 @@ struct Inner {
     addr: SocketAddr,
     root: PathBuf,
     pin: Option<String>,
+    /// The identity the receiver was started with. Sends present it as a client
+    /// certificate so the other side can bind trust to this device.
+    identity: Arc<Identity>,
+    /// Offers, answers and the trust policy they share with the receiver.
+    consent: Arc<Consent>,
     /// Fixed at start: discovery either came up, was disabled, or failed.
     discovery_state: DiscoveryState,
     events: broadcast::Sender<Event>,
@@ -322,6 +448,164 @@ struct Inner {
     watch: Mutex<Option<JoinHandle<()>>>,
     transfers: Mutex<HashMap<TransferId, Running>>,
     next_transfer: AtomicU64,
+}
+
+/// What a person or policy decided about one offer.
+enum OfferAnswer {
+    Accept(Vec<String>),
+    Decline,
+}
+
+/// One offer waiting for an answer.
+struct PendingOffer {
+    answer: oneshot::Sender<OfferAnswer>,
+    fingerprint: Option<String>,
+}
+
+/// The engine's side of the consent conversation.
+///
+/// The server asks [`Consent::decide`] before opening a session; the UI answers
+/// through [`Consent::answer`]. Policy is two things only: a global auto-accept
+/// switch and a set of trusted fingerprints. A name never enters this type.
+struct Consent {
+    events: broadcast::Sender<Event>,
+    trusted: StdMutex<HashSet<String>>,
+    auto_accept: AtomicBool,
+    pending: Mutex<HashMap<u64, PendingOffer>>,
+    next: AtomicU64,
+}
+
+impl Consent {
+    fn new(events: broadcast::Sender<Event>, auto_accept: bool, trusted: Vec<String>) -> Self {
+        let consent = Self {
+            events,
+            trusted: StdMutex::new(HashSet::new()),
+            auto_accept: AtomicBool::new(false),
+            pending: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+        };
+        consent.set_policy(auto_accept, trusted);
+        consent
+    }
+
+    /// Replace the policy with what the shell persisted.
+    fn set_policy(&self, enabled: bool, trusted: Vec<String>) {
+        self.auto_accept.store(enabled, Ordering::Relaxed);
+        let mut known = self.trusted.lock().expect("poisoned trust lock");
+        known.clear();
+        for fingerprint in trusted {
+            let fingerprint = fingerprint.trim().to_ascii_lowercase();
+            if !fingerprint.is_empty() {
+                known.insert(fingerprint);
+            }
+        }
+    }
+
+    fn is_trusted(&self, fingerprint: Option<&str>) -> bool {
+        fingerprint.is_some_and(|fingerprint| {
+            self.trusted
+                .lock()
+                .expect("poisoned trust lock")
+                .contains(fingerprint)
+        })
+    }
+
+    fn auto_accept(&self) -> bool {
+        self.auto_accept.load(Ordering::Relaxed)
+    }
+
+    fn trusted_devices(&self) -> Vec<String> {
+        let mut trusted: Vec<String> = self
+            .trusted
+            .lock()
+            .expect("poisoned trust lock")
+            .iter()
+            .cloned()
+            .collect();
+        trusted.sort();
+        trusted
+    }
+
+    /// Decide an offer, emitting the event a UI draws when a person must answer.
+    async fn decide(&self, offer: Offer) -> OfferDecision {
+        let all = offer.all_ids();
+        if self.auto_accept.load(Ordering::Relaxed) || self.is_trusted(offer.fingerprint.as_deref())
+        {
+            return OfferDecision::Accept(all);
+        }
+
+        let number = self.next.fetch_add(1, Ordering::Relaxed);
+        let id = OfferId(number);
+        let (answer, receiver) = oneshot::channel();
+        self.pending.lock().await.insert(
+            number,
+            PendingOffer {
+                answer,
+                fingerprint: offer.fingerprint.clone(),
+            },
+        );
+
+        let alias = offer
+            .alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(UNNAMED_SENDER)
+            .to_string();
+        let _ = self.events.send(Event::IncomingOffer {
+            id,
+            sender: OfferSender {
+                fingerprint: offer.fingerprint,
+                device_id: offer.device_id,
+                alias,
+            },
+            items: offer.items.iter().map(OfferedItem::from_manifest).collect(),
+            bytes: offer.bytes,
+        });
+
+        let (outcome, decision) = match tokio::time::timeout(OFFER_TIMEOUT, receiver).await {
+            Ok(Ok(OfferAnswer::Accept(ids))) if !ids.is_empty() => {
+                (OfferOutcome::Accepted, OfferDecision::Accept(ids))
+            }
+            Ok(Ok(_)) | Ok(Err(_)) => (OfferOutcome::Declined, OfferDecision::Decline),
+            Err(_) => {
+                // Nobody answered. Take the entry out so a late answer cannot
+                // claim to have settled an offer that already closed.
+                self.pending.lock().await.remove(&number);
+                (OfferOutcome::TimedOut, OfferDecision::NoAnswer)
+            }
+        };
+        let _ = self.events.send(Event::OfferClosed { id, outcome });
+        decision
+    }
+
+    /// Answer one offer. False when it already closed.
+    async fn answer(&self, id: OfferId, accepted: Vec<String>, remember: bool) -> bool {
+        let Some(PendingOffer {
+            answer,
+            fingerprint,
+        }) = self.pending.lock().await.remove(&id.0)
+        else {
+            return false;
+        };
+        let accepted = if accepted.is_empty() {
+            OfferAnswer::Decline
+        } else {
+            OfferAnswer::Accept(accepted)
+        };
+        // Only an accepted transfer makes a device trusted. Declining while the
+        // box happened to be ticked must not quietly grant future access.
+        // Recorded before waking the receiver, so the very next offer from the
+        // same device already sees the trust.
+        let trusting = remember && matches!(accepted, OfferAnswer::Accept(_));
+        if let Some(fingerprint) = fingerprint.filter(|_| trusting) {
+            self.trusted
+                .lock()
+                .expect("poisoned trust lock")
+                .insert(fingerprint);
+        }
+        answer.send(accepted).is_ok()
+    }
 }
 
 /// One send that has been handed to the network.
@@ -379,6 +663,25 @@ impl Engine {
             server_config = server_config.with_pin(pin.clone());
         }
 
+        // The event channel exists before the receiver, because the consent gate
+        // installed below needs somewhere to announce an offer. The policy is
+        // installed here too: an offer that arrives while the shell is still
+        // reading its settings must not be lost.
+        let (events, _) = broadcast::channel(EVENT_BUFFER);
+        let consent = Arc::new(Consent::new(
+            events.clone(),
+            config.auto_accept,
+            config.trusted,
+        ));
+        let gate: OfferGate = {
+            let consent = Arc::clone(&consent);
+            Arc::new(move |offer| {
+                let consent = Arc::clone(&consent);
+                Box::pin(async move { consent.decide(offer).await })
+            })
+        };
+        server_config = server_config.with_offer_gate(gate);
+
         let server = Server::bind(&identity, server_config).await?;
         let info = server.info().clone();
         let addr = server.local_addr();
@@ -395,8 +698,6 @@ impl Engine {
                 log::error!("receiver stopped accepting connections: {err}");
             }
         });
-
-        let (events, _) = broadcast::channel(EVENT_BUFFER);
 
         let mut discovery_state = DiscoveryState::Off;
         let discovery = match config.discovery {
@@ -476,6 +777,8 @@ impl Engine {
                 addr,
                 root,
                 pin: config.pin,
+                identity,
+                consent,
                 discovery_state,
                 events,
                 server: Mutex::new(Some(server_task)),
@@ -516,6 +819,40 @@ impl Engine {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.inner.events.subscribe()
+    }
+
+    /// Replace the consent policy with what the shell persisted.
+    ///
+    /// `enabled` accepts every offer without asking. `trusted` holds the
+    /// fingerprints of devices that are accepted on their own even when it is
+    /// off. A fingerprint is the identity proven by the client certificate, so
+    /// this list is the only thing that survives a rename.
+    pub fn set_auto_accept(&self, enabled: bool, trusted: Vec<String>) {
+        self.inner.consent.set_policy(enabled, trusted);
+    }
+
+    /// Whether every offer is accepted without asking.
+    #[must_use]
+    pub fn auto_accept(&self) -> bool {
+        self.inner.consent.auto_accept()
+    }
+
+    /// The fingerprints remembered as trusted senders, sorted.
+    #[must_use]
+    pub fn trusted_devices(&self) -> Vec<String> {
+        self.inner.consent.trusted_devices()
+    }
+
+    /// Answer an offer announced by [`Event::IncomingOffer`].
+    ///
+    /// `accepted` carries the item ids that may be saved; pass every id to
+    /// accept the whole transfer, or nothing to decline it. When `remember` is
+    /// true the sender's fingerprint is added to the trusted list and must be
+    /// persisted by the shell, so the next offer from the same device skips the
+    /// sheet. Returns false when the offer already closed (timeout or a second
+    /// answer), which a UI can ignore.
+    pub async fn answer_offer(&self, id: OfferId, accepted: Vec<String>, remember: bool) -> bool {
+        self.inner.consent.answer(id, accepted, remember).await
     }
 
     /// The devices currently visible, sorted by name.
@@ -620,6 +957,13 @@ impl Engine {
         // Build the client here so a malformed fingerprint fails the call
         // instead of becoming an event nobody is watching yet.
         let mut client = Client::new(addr, fingerprint)?;
+        // Present the device's identity as a client certificate, and announce
+        // the same name discovery shows. The certificate is what lets the
+        // receiver bind "always accept from this device" to something a rename
+        // cannot change; the alias is only a label on the consent sheet.
+        client = client
+            .with_identity(Arc::clone(&self.inner.identity))?
+            .with_alias(self.inner.info.alias.clone());
         if let Some(pin) = &self.inner.pin {
             client = client.with_pin(pin.clone());
         }

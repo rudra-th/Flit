@@ -13,7 +13,7 @@ use std::{
 
 use flit_core::Identity;
 use flit_core::{
-    Engine, EngineConfig, EngineError, Event, ItemOutcome, SendTarget, collect_targets,
+    Engine, EngineConfig, EngineError, Event, ItemOutcome, OfferId, SendTarget, collect_targets,
 };
 
 /// A scratch directory that does not need a temp-dir crate.
@@ -44,6 +44,19 @@ fn config(root: PathBuf, bind: SocketAddr) -> EngineConfig {
 }
 
 async fn start_engine(secret: u8, name: &str) -> (Engine, PathBuf, Arc<Identity>) {
+    start_engine_with(secret, name, true).await
+}
+
+/// Start an engine whose consent policy is `auto_accept`.
+///
+/// Most tests are about transfers, not consent, so they start with the receiver
+/// accepting every offer the way the desktop does. The consent tests start with
+/// it off and answer the sheet themselves.
+async fn start_engine_with(
+    secret: u8,
+    name: &str,
+    auto_accept: bool,
+) -> (Engine, PathBuf, Arc<Identity>) {
     let identity = Arc::new(Identity::from_secret_bytes([secret; 32]));
     let root = scratch(name);
     let engine = Engine::start(
@@ -52,7 +65,36 @@ async fn start_engine(secret: u8, name: &str) -> (Engine, PathBuf, Arc<Identity>
     )
     .await
     .expect("engine start");
+    engine.set_auto_accept(auto_accept, Vec::new());
     (engine, root, identity)
+}
+
+/// A receiver that must be answered before anything is saved.
+async fn start_asking(secret: u8, name: &str) -> (Engine, PathBuf, Arc<Identity>) {
+    start_engine_with(secret, name, false).await
+}
+
+/// Wait for the question a person would see: the offer, its item ids, and who
+/// proved it.
+async fn offered(
+    events: &mut tokio::sync::broadcast::Receiver<Event>,
+) -> (OfferId, Vec<String>, Option<String>) {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an offer within 20 s")
+            .expect("event stream stayed open");
+        if let Event::IncomingOffer {
+            id, sender, items, ..
+        } = event
+        {
+            return (
+                id,
+                items.into_iter().map(|item| item.id).collect(),
+                sender.fingerprint,
+            );
+        }
+    }
 }
 
 /// Wait for a terminal event, ignoring peer and discovery noise.
@@ -455,6 +497,137 @@ async fn cancelling_a_send_reports_it_and_writes_nothing() {
     assert!(
         !parts.is_dir() || std::fs::read_dir(&parts).unwrap().next().is_none(),
         "the receiver dropped the session instead of keeping partial bytes"
+    );
+
+    sender.stop().await;
+    receiver.stop().await;
+    std::fs::remove_dir_all(&receiver_root).ok();
+    std::fs::remove_dir_all(&sender_root).ok();
+}
+
+#[tokio::test]
+async fn an_answered_offer_saves_what_the_person_accepted() {
+    let (receiver, receiver_root, receiver_identity) = start_asking(41, "consent-receiver").await;
+    let (sender, sender_root, sender_identity) = start_engine(42, "consent-sender").await;
+
+    let source = sender_root.join("note.txt");
+    std::fs::write(&source, b"the person said yes").unwrap();
+
+    let mut sender_events = sender.subscribe();
+    let mut receiver_events = receiver.subscribe();
+    sender
+        .send_to(
+            receiver.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: source,
+                name: Some("note.txt".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+
+    let (offer, ids, fingerprint) = offered(&mut receiver_events).await;
+    assert_eq!(
+        fingerprint,
+        Some(sender_identity.fingerprint()),
+        "the offer carries the fingerprint proven by the certificate"
+    );
+    assert_eq!(ids.len(), 1, "the sheet lists the items it can accept");
+    assert!(
+        receiver.answer_offer(offer, ids, true).await,
+        "an open offer takes an answer"
+    );
+
+    assert!(matches!(
+        terminal(&mut sender_events).await,
+        Event::TransferFinished { ref items, .. } if items.iter().all(|item| item.error.is_none())
+    ));
+    assert_eq!(
+        std::fs::read(receiver_root.join("note.txt")).unwrap(),
+        b"the person said yes"
+    );
+    assert_eq!(
+        receiver.trusted_devices(),
+        vec![sender_identity.fingerprint()],
+        "ticking remember adds the proven fingerprint"
+    );
+
+    // The remembered device skips the sheet: this second send finishes without
+    // anybody answering. If trust had not stuck, it would wait out the offer
+    // timeout instead.
+    let second = sender_root.join("second.txt");
+    std::fs::write(&second, b"no sheet this time").unwrap();
+    sender
+        .send_to(
+            receiver.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: second,
+                name: Some("second.txt".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+    assert!(matches!(
+        terminal(&mut sender_events).await,
+        Event::TransferFinished { ref items, .. } if items.iter().all(|item| item.error.is_none())
+    ));
+    assert_eq!(
+        std::fs::read(receiver_root.join("second.txt")).unwrap(),
+        b"no sheet this time"
+    );
+
+    sender.stop().await;
+    receiver.stop().await;
+    std::fs::remove_dir_all(&receiver_root).ok();
+    std::fs::remove_dir_all(&sender_root).ok();
+}
+
+#[tokio::test]
+async fn a_declined_offer_writes_nothing_and_remembers_nothing() {
+    let (receiver, receiver_root, receiver_identity) = start_asking(43, "declined-receiver").await;
+    let (sender, sender_root, _) = start_engine(44, "declined-sender").await;
+
+    let source = sender_root.join("secret.txt");
+    std::fs::write(&source, b"not for this phone").unwrap();
+
+    let mut sender_events = sender.subscribe();
+    let mut receiver_events = receiver.subscribe();
+    sender
+        .send_to(
+            receiver.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: source,
+                name: Some("secret.txt".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+
+    let (offer, ids, _) = offered(&mut receiver_events).await;
+    assert!(!receiver.auto_accept(), "nothing is accepted silently");
+    // Remembering is ticked on purpose: a decline must not grant trust.
+    assert!(receiver.answer_offer(offer, Vec::new(), true).await);
+
+    match terminal(&mut sender_events).await {
+        Event::TransferFailed { reason, .. } => {
+            assert!(reason.contains("declined"), "the reason names it: {reason}");
+        }
+        other => panic!("expected a failed transfer, got {other:?}"),
+    }
+    assert!(
+        !receiver_root.join("secret.txt").exists(),
+        "a declined offer writes nothing"
+    );
+    assert!(
+        receiver.trusted_devices().is_empty(),
+        "declining never adds a trusted device"
+    );
+    assert!(
+        !receiver.answer_offer(offer, ids, false).await,
+        "a closed offer cannot be answered twice"
     );
 
     sender.stop().await;
