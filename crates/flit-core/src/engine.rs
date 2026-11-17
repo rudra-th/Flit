@@ -219,7 +219,7 @@ pub struct OfferSender {
     pub fingerprint: Option<String>,
     /// Claimed device id. Matches discovery when the sender is also announcing.
     pub device_id: Option<String>,
-    /// Claimed display name, or [`UNNAMED_SENDER`] when none was given.
+    /// Claimed display name, or a plain placeholder when none was given.
     pub alias: String,
 }
 

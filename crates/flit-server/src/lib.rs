@@ -34,10 +34,10 @@ use flit_crypto::{Identity, TlsError};
 use hyper::{Request, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use rustls::{
-    DigitallySignedStruct, Error as RustlsError, SignatureScheme,
+    DigitallySignedStruct, DistinguishedName, Error as RustlsError, SignatureScheme,
     client::danger::HandshakeSignatureValid,
     crypto::WebPkiSupportedAlgorithms,
-    pki_types::{CertificateDer, DistinguishedName, UnixTime},
+    pki_types::{CertificateDer, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
 };
 use tokio::net::{TcpListener, TcpStream};
