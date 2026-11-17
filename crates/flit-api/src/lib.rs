@@ -29,8 +29,86 @@ pub const PROTO_HEADER: &str = "x-flit-proto";
 /// Header carrying the sender's device id.
 pub const DEVICE_HEADER: &str = "x-flit-device";
 
+/// Header carrying the sender's display name.
+///
+/// A name is a label, not proof: the receiver shows it while the certificate
+/// fingerprint, never this header, decides who the device is. The value is
+/// percent-encoded UTF-8 (see [`encode_header_text`]) because a header is bytes,
+/// and people name devices in every script.
+pub const ALIAS_HEADER: &str = "x-flit-alias";
+
 /// Header carrying a first-contact PIN, always inside TLS.
 pub const PIN_HEADER: &str = "x-flit-pin";
+
+/// Percent-encode arbitrary text so it can travel in a header value.
+///
+/// HTTP header values are bytes, but not all bytes: control characters,
+/// non-ASCII and the current separator rules make a name like `小明的手机`
+/// invalid. Keeping `A-Z a-z 0-9 - . _ ~` and a space literal makes the common
+/// case readable in a log, and `%XX` covers everything else. A literal `%` is
+/// escaped, so the mapping is reversible.
+#[must_use]
+pub fn encode_header_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b' ' => {
+                out.push(char::from(byte));
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[(byte >> 4) as usize]));
+                out.push(char::from(HEX[(byte & 0x0f) as usize]));
+            }
+        }
+    }
+    out
+}
+
+/// Read text written by [`encode_header_text`].
+///
+/// A value that is not valid percent-encoded UTF-8 is returned unchanged rather
+/// than dropped: a sender that wrote a plain name still gets its name shown, and
+/// nothing here is trusted anyway.
+#[must_use]
+pub fn decode_header_text(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                match (hex_value(bytes[index + 1]), hex_value(bytes[index + 2])) {
+                    (Some(high), Some(low)) => {
+                        out.push((high << 4) | low);
+                        index += 3;
+                    }
+                    _ => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
+}
+
+const HEX: [u8; 16] = *b"0123456789abcdef";
+
+/// Byte value of one hex digit, or `None`.
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
 
 /// Path prefix for every control endpoint.
 pub const API_PREFIX: &str = "/api/v1";
@@ -205,6 +283,14 @@ pub enum ErrorCode {
     PinIncorrect,
     /// The session or item does not exist.
     NotFound,
+    /// The receiver declined this transfer.
+    Declined,
+    /// Nobody answered the offer before it expired.
+    NoAnswer,
+    /// The receiver is busy with another transfer.
+    Busy,
+    /// Too many prepare attempts from this address in the window.
+    RateLimited,
     /// The item collides with existing state.
     Conflict,
     /// The declared size exceeds a limit.
@@ -229,6 +315,10 @@ impl ErrorCode {
             Self::PinRequired => "pin_required",
             Self::PinIncorrect => "pin_incorrect",
             Self::NotFound => "not_found",
+            Self::Declined => "declined",
+            Self::NoAnswer => "no_answer",
+            Self::Busy => "busy",
+            Self::RateLimited => "rate_limited",
             Self::Conflict => "conflict",
             Self::TooLarge => "too_large",
             Self::DiskFull => "disk_full",
@@ -548,6 +638,36 @@ mod tests {
         assert_eq!(MULTICAST_GROUP[0], 224);
         assert_eq!(MULTICAST_GROUP[1], 0);
         assert_eq!(MULTICAST_GROUP[2], 0);
+    }
+
+    #[test]
+    fn header_text_round_trips_every_script() {
+        for name in [
+            "Desk",
+            "小明的手机",
+            "Renée's phone",
+            "100% sure",
+            "tab\there",
+        ] {
+            let encoded = encode_header_text(name);
+            assert!(
+                encoded.bytes().all(|byte| (0x20..0x7f).contains(&byte)),
+                "{encoded:?} is not a header value"
+            );
+            assert_eq!(decode_header_text(&encoded), name);
+        }
+    }
+
+    #[test]
+    fn header_text_leaves_plain_names_readable() {
+        assert_eq!(encode_header_text("Desk 2"), "Desk 2");
+        assert_eq!(decode_header_text("Desk 2"), "Desk 2");
+    }
+
+    #[test]
+    fn header_text_keeps_a_value_it_cannot_decode() {
+        assert_eq!(decode_header_text("100%"), "100%");
+        assert_eq!(decode_header_text("%ff"), "%ff");
     }
 
     #[test]
