@@ -660,6 +660,20 @@ impl Connection {
                 return;
             }
         };
+        // The DELETE is a session request like any other: without the same
+        // certificate the receiver will refuse it as another device's session.
+        if let Some(identity) = &self.identity {
+            client = match client.with_identity(Arc::clone(identity)) {
+                Ok(client) => client,
+                Err(err) => {
+                    log::debug!("could not rebuild the client identity to cancel: {err}");
+                    return;
+                }
+            };
+        }
+        if let Some(alias) = &self.alias {
+            client = client.with_alias(alias.clone());
+        }
         if let Some(pin) = &self.pin {
             client = client.with_pin(pin.clone());
         }
@@ -854,11 +868,18 @@ fn local_error(path: &Path, source: std::io::Error) -> ClientError {
 /// Turn a non-success response into the best error we can describe.
 fn status_error(status: StatusCode, body: &Bytes) -> ClientError {
     if let Ok(error) = serde_json::from_slice::<flit_api::ApiErrorBody>(body) {
-        if error.code == ErrorCode::Internal {
-            return ClientError::Status {
-                status: status.as_u16(),
-                body: error.message,
-            };
+        match error.code {
+            ErrorCode::Declined => return ClientError::Declined,
+            ErrorCode::NoAnswer => return ClientError::NoAnswer,
+            ErrorCode::Busy => return ClientError::Busy,
+            ErrorCode::RateLimited => return ClientError::RateLimited,
+            ErrorCode::Internal => {
+                return ClientError::Status {
+                    status: status.as_u16(),
+                    body: error.message,
+                };
+            }
+            _ => {}
         }
         return ClientError::Status {
             status: status.as_u16(),

@@ -28,8 +28,11 @@ use std::{
     time::Duration,
 };
 
-use flit_api::{API_PREFIX, Info, PIN_HEADER, PROTO_HEADER, PROTO_VERSION, PROTO_VERSION_STR};
-use flit_crypto::{ed25519_public_key, fingerprint_of};
+use flit_api::{
+    ALIAS_HEADER, API_PREFIX, DEVICE_HEADER, Info, PIN_HEADER, PROTO_HEADER, PROTO_VERSION,
+    PROTO_VERSION_STR, encode_header_text,
+};
+use flit_crypto::{Identity, ed25519_public_key, fingerprint_of};
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{Method, Request, StatusCode, body::Bytes, client::conn::http1, header};
 use hyper_util::rt::TokioIo;
@@ -46,7 +49,12 @@ use tokio_rustls::TlsConnector;
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a small control request may take: info, prepare, finish, cancel.
-pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// Prepare is the long one: it waits while the person on the other device reads
+/// the offer and decides. The receiver's own offer window is 60 seconds, so this
+/// budget has to outlast it or every unanswered offer becomes a timeout here
+/// instead of a clear "no answer".
+pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// How long one file body may take to travel.
 ///
@@ -119,6 +127,18 @@ pub enum ClientError {
     /// The receiver refused the item during prepare.
     #[error("the receiver refused the item: {0}")]
     Rejected(flit_api::ErrorCode),
+    /// The person on the other device declined the transfer.
+    #[error("the other device declined the transfer")]
+    Declined,
+    /// Nobody answered the offer before it expired.
+    #[error("nobody answered the offer on the other device")]
+    NoAnswer,
+    /// The receiver is already busy with another transfer.
+    #[error("the other device is busy with another transfer")]
+    Busy,
+    /// Too many attempts from this address.
+    #[error("too many transfer attempts; try again in a minute")]
+    RateLimited,
     /// The sender was cancelled by [`crate::SendProgress::cancel`].
     ///
     /// Not a failure: the receiver was told to drop the session, so nothing is
@@ -166,6 +186,12 @@ pub struct Client {
     control_timeout: Duration,
     transfer_timeout: Duration,
     presented: Arc<Mutex<Option<String>>>,
+    /// Identity to present as a client certificate, when the caller has one.
+    identity: Option<Arc<Identity>>,
+    /// Claimed device id, sent as a header so the receiver can show a peer row.
+    device_id: Option<String>,
+    /// Claimed display name. Cosmetic, like every name.
+    alias: Option<String>,
 }
 
 impl Client {
@@ -176,7 +202,7 @@ impl Client {
     pub fn new(addr: SocketAddr, fingerprint: &str) -> Result<Self, ClientError> {
         let fingerprint = normalize_fingerprint(fingerprint)?;
         let presented = Arc::new(Mutex::new(None));
-        let config = pinned_config(&fingerprint, Arc::clone(&presented));
+        let config = pinned_config(&fingerprint, Arc::clone(&presented))?;
         Ok(Self {
             addr,
             server_name: ServerName::IpAddress(addr.ip().into()),
@@ -187,7 +213,33 @@ impl Client {
             control_timeout: CONTROL_TIMEOUT,
             transfer_timeout: TRANSFER_TIMEOUT,
             presented,
+            identity: None,
+            device_id: None,
+            alias: None,
         })
+    }
+
+    /// Present `identity` as a client certificate on this connection.
+    ///
+    /// This is what turns "some device on the LAN" into a device the receiver
+    /// can remember: the certificate proves the same key discovery pinned, so a
+    /// trusted fingerprint cannot be borrowed by another machine.
+    pub fn with_identity(mut self, identity: Arc<Identity>) -> Result<Self, ClientError> {
+        self.config = config_with(
+            PinPolicy::Exact(self.fingerprint.clone()),
+            Arc::clone(&self.presented),
+            Some(identity.as_ref()),
+        )?;
+        self.device_id = Some(identity.device_id());
+        self.identity = Some(identity);
+        Ok(self)
+    }
+
+    /// Announce a display name alongside the certificate.
+    #[must_use]
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
     }
 
     /// Send `pin` as `X-Flit-Pin` on every request.
@@ -281,6 +333,9 @@ impl Client {
             pin: self.pin.clone(),
             control_timeout: self.control_timeout,
             transfer_timeout: self.transfer_timeout,
+            identity: self.identity.clone(),
+            device_id: self.device_id.clone(),
+            alias: self.alias.clone(),
         })
     }
 }
@@ -294,6 +349,10 @@ pub struct Connection {
     pub(crate) pin: Option<String>,
     pub(crate) control_timeout: Duration,
     pub(crate) transfer_timeout: Duration,
+    /// Kept so the cancel path can reconnect with the same proof.
+    pub(crate) identity: Option<Arc<Identity>>,
+    pub(crate) device_id: Option<String>,
+    pub(crate) alias: Option<String>,
 }
 
 impl Connection {
@@ -323,6 +382,12 @@ impl Connection {
             .header(PROTO_HEADER, PROTO_VERSION_STR);
         if let Some(pin) = &self.pin {
             builder = builder.header(PIN_HEADER, pin);
+        }
+        if let Some(device_id) = &self.device_id {
+            builder = builder.header(DEVICE_HEADER, device_id);
+        }
+        if let Some(alias) = &self.alias {
+            builder = builder.header(ALIAS_HEADER, encode_header_text(alias));
         }
         builder
             .body(body)
@@ -456,7 +521,7 @@ pub async fn probe(addr: SocketAddr, timeout: Duration) -> Result<Probe, ClientE
 
 async fn probe_inner(addr: SocketAddr) -> Result<Probe, ClientError> {
     let presented = Arc::new(Mutex::new(None));
-    let config = config_with(PinPolicy::Any, Arc::clone(&presented));
+    let config = config_with(PinPolicy::Any, Arc::clone(&presented), None)?;
 
     let tcp = TcpStream::connect(addr)
         .await
@@ -674,25 +739,42 @@ impl std::error::Error for UnreadableCertificate {}
 fn pinned_config(
     fingerprint: &str,
     presented: Arc<Mutex<Option<String>>>,
-) -> Arc<rustls::ClientConfig> {
-    config_with(PinPolicy::Exact(fingerprint.to_string()), presented)
+) -> Result<Arc<rustls::ClientConfig>, ClientError> {
+    config_with(PinPolicy::Exact(fingerprint.to_string()), presented, None)
 }
 
 /// Build a TLS 1.3 client config with an explicit pin policy.
+///
+/// When `identity` is given, the same key is also offered as a client
+/// certificate. That is the only way a receiver can tell one sender from another
+/// on a shared network, and therefore the only honest basis for "always accept
+/// from this device".
 fn config_with(
     policy: PinPolicy,
     presented: Arc<Mutex<Option<String>>>,
-) -> Arc<rustls::ClientConfig> {
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+    identity: Option<&Identity>,
+) -> Result<Arc<rustls::ClientConfig>, ClientError> {
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13])
     .expect("the ring provider supports TLS 1.3")
     .dangerous()
-    .with_custom_certificate_verifier(Arc::new(PinnedIdentity { policy, presented }))
-    .with_no_client_auth();
+    .with_custom_certificate_verifier(Arc::new(PinnedIdentity { policy, presented }));
+
+    let mut config = match identity {
+        None => builder.with_no_client_auth(),
+        Some(identity) => {
+            let tls = identity
+                .tls_identity(&["localhost".to_string()])
+                .map_err(|err| ClientError::BadCertificate(err.to_string()))?;
+            builder
+                .with_client_auth_cert(tls.cert_chain, tls.key)
+                .map_err(|err| ClientError::Handshake(err.to_string()))?
+        }
+    };
     config.alpn_protocols = vec![b"flit/1".to_vec()];
-    Arc::new(config)
+    Ok(Arc::new(config))
 }
 
 #[cfg(test)]
