@@ -27,3 +27,4 @@ apps/android/**/build/
 apps/android/app/src/main/jniLibs/
 apps/android/app/src/main/java/dev/flit/android/ffi/
 
+target-msvc/

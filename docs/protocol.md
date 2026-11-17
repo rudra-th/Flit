@@ -178,7 +178,24 @@ fingerprint in the QR is authoritative for that session.
   A certificate that does not match is a hard failure. There is no
   "continue anyway" path, and no API to request one.
 
-### 4.1 PIN
+### 4.1 Client certificates
+
+The sender also has an identity, and it presents it as a **client certificate**
+on the same TLS connection: same Ed25519 key, same self-signed shape.
+
+- The receiver offers client authentication but does not require it. `GET
+  /api/v1/info`, a browser and a subnet probe can still reach the port without a
+  certificate.
+- The receiver accepts **any** client certificate, because there is no CA to
+  chain to. What it verifies is the handshake signature: a client cannot
+  present someone else's certificate without holding the matching key.
+- The device fingerprint is read back out of the certificate's public key, never
+  out of a header or a JSON field. That fingerprint is what a session binds to,
+  and what "always accept from this device" remembers. A name is never used.
+- A client without a certificate is allowed but anonymous: its session has no
+  owner, and no receiver can remember it, because there is nothing to remember.
+
+### 4.2 PIN
 
 `pin_required` in the announce and in `/info` tells a peer that a PIN is needed
 for first contact. A PIN is 4 to 12 ASCII digits. It is sent as a header on every
@@ -198,8 +215,10 @@ Rules:
 - Three failed attempts per source address per 60 seconds, then `403
   pin_incorrect` for the rest of that window — **including with the correct
   PIN**, so the limit cannot be guessed through. A missing PIN is not an attempt:
-  nothing was guessed. Counting per device rather than per address needs a
-  proven device identity, which arrives with `POST /api/v1/register`.
+  nothing was guessed. The guard counts per address, so it also covers a client
+  that presents no certificate; per-device counting is possible now that senders
+  prove an identity (§4.1), but the address remains the honest scope for a
+  first-contact secret.
 - A wrong PIN and a missing PIN are distinct errors (`pin_incorrect` versus
   `pin_required`) so the UI can say something true. "Wrong" and "locked out"
   deliberately share one message, so the error cannot be used to count attempts.
@@ -216,9 +235,12 @@ X-Flit-Proto: 1
 ```
 
 A sender that has an identity of its own also sends `X-Flit-Device: <device_id>`
-as a display and logging hint. Receivers never require it and never authorize on
-it: in v1 the only identity that is proven is the certificate's, and the client
-side of a transfer has no identity of its own until pairing exists.
+and `X-Flit-Alias: <display name>` as display and logging hints. The alias is
+percent-encoded UTF-8 (`%XX` for anything outside `A-Z a-z 0-9 - . _ ~` and
+space), so a name in any script survives a header. Receivers never require
+either header and never authorize on them: identity is the client certificate
+from §4.1. Both values are shown on the consent sheet as claims, next to the
+fingerprint that was actually proven.
 
 Bodies are UTF-8 JSON unless stated otherwise. Responses are UTF-8 JSON.
 
@@ -243,10 +265,14 @@ text is derived from `code`, never from `message`.
 | 401 | `unauthorized` | No session, or session not owned by this device |
 | 403 | `pin_required` | A PIN is needed to continue |
 | 403 | `pin_incorrect` | Wrong PIN |
+| 403 | `declined` | The person on the receiver declined the transfer |
 | 404 | `not_found` | Unknown session or item |
+| 408 | `no_answer` | Nobody answered the offer within 60 seconds |
 | 409 | `conflict` | Item collides with existing state |
+| 409 | `busy` | The receiver is already receiving another transfer |
 | 413 | `too_large` | Declared size or manifest exceeds a limit |
 | 415 | `unsupported` | Protocol version or capability mismatch |
+| 429 | `rate_limited` | Too many prepare attempts from one address |
 | 500 | `internal` | The receiver cannot act on this |
 | 507 | `disk_full` | The receiver ran out of space |
 
@@ -285,6 +311,11 @@ token, and its peers must not attempt that feature.
 
 First request of a session. Exchanges device identity and proves key ownership
 with a detached signature over a server-issued nonce.
+
+Not implemented, and no longer on the path to consent: a sender proves its
+identity with a client certificate on every connection (§4.1), so there is no
+nonce exchange to design. The endpoint stays in the vocabulary so a future
+build can use it without a protocol bump.
 
 Request:
 
@@ -328,6 +359,46 @@ Items are validated on declared shape before any file is opened. Limits are in
 If **every** item is rejected there is nothing to do, so the receiver answers
 `400 bad_request` and creates no session. A sender that gets this must fix its
 manifest rather than retry the same request.
+
+#### Consent
+
+Prepare is also the consent point: no bytes move until the sender has been
+answered. A receiver with a person in front of it holds the request open while
+the offer is shown, then answers one of:
+
+- `201` — accepted, possibly a subset. The person may save some items and refuse
+  the rest, so `accepted` and `rejected` in the response are the authority, not
+  the manifest the sender sent.
+- `403 declined` — the person said no. The sender must not retry automatically.
+- `408 no_answer` — nobody answered within 60 seconds. Treated like a decline;
+  the sender may offer again later, deliberately.
+- `409 busy` — a session was opened within the last 60 seconds and is still
+  the receiver's active transfer. One at a time keeps the question answerable;
+  a resume of the **same** manifest from the **same** fingerprint is not a second
+  transfer and is admitted.
+- `429 rate_limited` — more than 12 prepare attempts from one source address in
+  60 seconds. Counted before the sheet is shown, so a spammer cannot turn consent
+  into a denial of service against the person.
+
+A receiver with no shell answering (the CLI, tests, a headless box) accepts the
+whole manifest. Auto-accept has two forms, both opt-in and both keyed only by the
+fingerprint from §4.1:
+
+- a global switch that accepts every offer without asking;
+- a trusted-device list, consulted when the switch is off, so a device the person
+  chose before skips the sheet while everyone else still asks.
+
+The PIN, when configured, is checked before the offer exists: a wrong or missing
+PIN never reaches the consent sheet.
+
+#### Session ownership
+
+The session is owned by the fingerprint that opened it. Every `PUT`, `pack`,
+`finish` and `DELETE` must present the same client certificate; anything else is
+`401 unauthorized`. A session id is a name, not a capability another device can
+borrow. A sender with no certificate owns a session with no fingerprint, so only
+another certificate-less client can continue it — which is exactly the
+unauthenticated case, and it is allowed because nothing was ever proven.
 
 **Prepare is idempotent for an identical manifest.** A sender that is killed and
 re-runs the same command presents the same items in the same order, so the
@@ -504,6 +575,11 @@ The browser client exists because HTTP does. It is receive-only.
   fingerprint are the visible mitigations, and both are shown before the first
   byte moves. An announced `alias` is a local label: its owner can change it at
   will, so it is never evidence of identity.
+- Consent binds to the fingerprint proven by the sender's client certificate,
+  never to the announced name. "Always accept from this device" therefore
+  survives a rename and cannot be inherited by another machine on the network.
+- A receiver is busy with one transfer at a time, and a prepare counts against a
+  per-address limit, so an offer cannot be used to flood the person with sheets.
 - Every incoming name is hostile: paths are sanitized segment by segment, and
   traversal, absolute paths, reserved device names and control characters are
   rejected rather than rewritten.
