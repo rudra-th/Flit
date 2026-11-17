@@ -2,7 +2,7 @@
 //!
 //! Three paths, in the order the protocol tries them:
 //!
-//! 1. a JSON announce on `239.255.42.99:47820` every two seconds;
+//! 1. a JSON announce on `224.0.0.167:47820` every two seconds;
 //! 2. a subnet scan of `GET /api/v1/info` when multicast is filtered, which is
 //!    the common case on guest and corporate networks;
 //! 3. a QR code or a typed address, which is also the only way across subnets.

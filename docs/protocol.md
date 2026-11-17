@@ -41,7 +41,7 @@ Rules:
 
 | Purpose | Transport | Port |
 |---|---|---|
-| Discovery announce | UDP multicast to `239.255.42.99` | 47820 |
+| Discovery announce | UDP multicast to `224.0.0.167` | 47820 |
 | Control and data | HTTPS (TLS 1.3) | 47821 |
 | Browser receive session | HTTP (no TLS) | 47822 |
 
@@ -59,7 +59,7 @@ uploads. See §8.
 ### 3.1 Multicast announce
 
 Every two seconds, and immediately on start, a node sends a JSON object to
-`239.255.42.99:47820`, TTL 1:
+`224.0.0.167:47820`, TTL 1:
 
 ```json
 {

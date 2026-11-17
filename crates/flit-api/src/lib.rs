@@ -45,7 +45,12 @@ pub const TLS_PORT: u16 = 47_821;
 pub const BROWSER_PORT: u16 = 47_822;
 
 /// IPv4 multicast group used for discovery announcements.
-pub const MULTICAST_GROUP: [u8; 4] = [239, 255, 42, 99];
+///
+/// Inside 224.0.0.0/24, the link-local block: routers never forward it, and
+/// Android Wi-Fi drivers accept it more reliably than site-local addresses in
+/// 239.0.0.0/8, whose scope handling differs between drivers. Announces are
+/// TTL 1, so the group is a label on the local link and nothing more.
+pub const MULTICAST_GROUP: [u8; 4] = [224, 0, 0, 167];
 
 /// Default share alias shown to other devices.
 pub const DEFAULT_ALIAS: &str = "Flit";
@@ -533,6 +538,16 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         let back: Info = serde_json::from_str(&json).unwrap();
         assert_eq!(info, back);
+    }
+
+    /// Announces are TTL 1 and must never be routed. Staying inside
+    /// 224.0.0.0/24 makes that a property of the address, not of every
+    /// sender's TTL setting.
+    #[test]
+    fn the_multicast_group_is_link_local() {
+        assert_eq!(MULTICAST_GROUP[0], 224);
+        assert_eq!(MULTICAST_GROUP[1], 0);
+        assert_eq!(MULTICAST_GROUP[2], 0);
     }
 
     #[test]

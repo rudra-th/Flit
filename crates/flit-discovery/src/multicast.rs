@@ -151,9 +151,7 @@ impl Wire {
         socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.port)).into())?;
         socket.set_multicast_ttl_v4(1)?;
         socket.set_multicast_loop_v4(config.loopback)?;
-        for addr in &joins {
-            socket.join_multicast_v4(&group, addr)?;
-        }
+        let joins = join_where_possible(&socket, group, &joins)?;
 
         let std_socket: std::net::UdpSocket = socket.into();
         Ok(Self {
@@ -196,6 +194,32 @@ impl Wire {
     async fn recv(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         self.socket.recv_from(buf).await
     }
+}
+
+/// Join `group` on every interface that accepts it, and return the ones that
+/// did. A laptop routinely carries an interface that cannot join — a VPN
+/// adapter that is up with no carrier, a tether that just dropped — and one
+/// dead interface must not take discovery down with it. Failing only when no
+/// interface at all can join keeps the honest error for a machine that truly
+/// has no way onto the network.
+fn join_where_possible(
+    socket: &Socket,
+    group: Ipv4Addr,
+    joins: &[Ipv4Addr],
+) -> io::Result<Vec<Ipv4Addr>> {
+    let mut joined = Vec::new();
+    for addr in joins {
+        match socket.join_multicast_v4(&group, addr) {
+            Ok(()) => joined.push(*addr),
+            Err(err) => log::debug!("discovery: skipping multicast join on {addr}: {err}"),
+        }
+    }
+    if joined.is_empty() {
+        return Err(io::Error::other(format!(
+            "no interface accepted a multicast join on {group}"
+        )));
+    }
+    Ok(joined)
 }
 
 /// A running discovery service.
@@ -389,5 +413,51 @@ impl std::fmt::Debug for Discovery {
             .field("interfaces", &self.interfaces)
             .field("port", &self.wire.group.port())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A socket prepared the way [`Wire::bind`] prepares one, on an
+    /// ephemeral port so tests never contend for the discovery port.
+    fn test_socket() -> Socket {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        socket.set_reuse_address(true).unwrap();
+        socket
+            .bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)).into())
+            .unwrap();
+        socket
+    }
+
+    /// 192.0.2.1 is TEST-NET-1: reserved for documentation, never assigned to
+    /// an interface, so no platform can join a multicast group through it.
+    const DEAD_INTERFACE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+
+    /// One dead interface in the list is skipped; the ones that can join
+    /// still do, wherever the dead one sits.
+    #[test]
+    fn a_dead_interface_is_skipped_not_fatal() {
+        let socket = test_socket();
+        let group = Ipv4Addr::from(MULTICAST_GROUP);
+
+        let joined =
+            join_where_possible(&socket, group, &[DEAD_INTERFACE, Ipv4Addr::UNSPECIFIED])
+                .expect("a joinable interface keeps discovery alive");
+        assert_eq!(joined, vec![Ipv4Addr::UNSPECIFIED]);
+    }
+
+    /// A machine where nothing can join still fails loudly, with the last
+    /// error carried through — that is the case `Wire::bind` must never
+    /// paper over.
+    #[test]
+    fn no_joinable_interface_is_an_error() {
+        let socket = test_socket();
+        let group = Ipv4Addr::from(MULTICAST_GROUP);
+
+        let err = join_where_possible(&socket, group, &[DEAD_INTERFACE])
+            .expect_err("an impossible join must fail");
+        assert!(err.to_string().contains(&group.to_string()));
     }
 }
