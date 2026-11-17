@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the provider may hand out. Only the two folders the app itself
+     writes: what landed over the network, and the outbox used to send. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="received"
+        path="received/" />
+    <cache-path
+        name="outbox"
+        path="outbox/" />
+</paths>

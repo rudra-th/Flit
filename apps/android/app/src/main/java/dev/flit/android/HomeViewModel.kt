@@ -37,6 +37,8 @@ data class HomeState(
     val transfer: TransferUi? = null,
     /** What has landed in the receive folder. */
     val received: List<ReceivedFile> = emptyList(),
+    /** A row removed for undo; the disk delete waits until the snackbar goes. */
+    val removed: ReceivedFile? = null,
     val error: String? = null,
     /** One sentence to show once, then clear. */
     val notice: String? = null,
@@ -88,7 +90,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private var engine: MobileEngine? = null
     private var multicast: WifiManager.MulticastLock? = null
     private var poller: Job? = null
+    /** Runs out the undo window; cancelled by undo, commits the disk delete. */
+    private var deleteJob: Job? = null
     private var starting = false
+    private lateinit var mediaImporter: MediaImporter
 
     init {
         start()
@@ -152,6 +157,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         poller = viewModelScope.launch {
             while (isActive) {
                 refresh()
+                // A file can land while the screen is open — an incoming send
+                // has no event of its own — so the ledger rides along.
+                refreshReceived()
                 delay(POLL_MS)
             }
         }
@@ -318,7 +326,50 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             val files = withContext(Dispatchers.IO) {
                 runCatching { open.received() }.getOrDefault(emptyList())
             }
-            _state.update { it.copy(received = files) }
+            if (!::mediaImporter.isInitialized) {
+                mediaImporter = MediaImporter(getApplication())
+            }
+            withContext(Dispatchers.IO) { mediaImporter.importAll(files) }
+            // A row the person removed stays removed even when the folder is
+            // re-read before the delete commits: it is still on disk.
+            _state.update { current ->
+                current.copy(
+                    received = files.filterNot { it.name == current.removed?.name },
+                )
+            }
+        }
+    }
+
+    /**
+     * Take a row out of the ledger now; the disk delete happens only when the
+     * undo window closes. A second delete commits the first one immediately,
+     * because only one snack can be pending.
+     */
+    fun removeReceived(file: ReceivedFile) {
+        commitPendingDelete()
+        _state.update { it.copy(removed = file, received = it.received - file) }
+        deleteJob = viewModelScope.launch {
+            delay(UNDO_MS)
+            commitPendingDelete()
+        }
+    }
+
+    /** The undo tap: nothing was deleted, put the row back where it was. */
+    fun undoRemoveReceived() {
+        deleteJob?.cancel()
+        deleteJob = null
+        _state.update { it.copy(removed = null) }
+        refreshReceived()
+    }
+
+    /** Delete the pending row for real, off the main thread. */
+    private fun commitPendingDelete() {
+        val file = _state.value.removed ?: return
+        deleteJob?.cancel()
+        deleteJob = null
+        _state.update { it.copy(removed = null, received = it.received - file) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { deleteReceived(getApplication(), file.name) }
         }
     }
 
@@ -351,6 +402,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         // The engine is about to abort anything in flight, so the foreground
         // service has nothing left to justify it.
         TransferService.finished(getApplication())
+        // A row still waiting out its undo window deletes for real now: the
+        // snackbar it belonged to dies with the screen.
+        _state.value.removed?.let { pending ->
+            runCatching { deleteReceived(getApplication(), pending.name) }
+        }
         val open = engine
         engine = null
         if (open != null) {
@@ -435,5 +491,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** Discovery announces every second; two seconds keeps the list fresh. */
         const val POLL_MS = 2_000L
+
+        /** How long the undo offer stays on screen before the delete commits. */
+        const val UNDO_MS = 5_000L
     }
 }
