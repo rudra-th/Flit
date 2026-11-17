@@ -17,8 +17,10 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +45,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -104,12 +110,17 @@ fun HomeScreen(
     onDismissTransfer: () -> Unit,
     onUseAddress: (String, String) -> Unit,
     onClearTarget: () -> Unit,
+    onRemoveReceived: (ReceivedFile) -> Unit,
+    onUndoRemove: () -> Unit,
 ) {
     val colors = FlitPalette.colors
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(FlitTab.Receive.name) }
     var renaming by remember { mutableStateOf(false) }
     var addressing by remember { mutableStateOf(false) }
+    /** The ledger row whose actions are on the table, if any. */
+    var fileActions by remember { mutableStateOf<ReceivedFile?>(null) }
+    val snacks = remember { SnackbarHostState() }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -121,6 +132,26 @@ fun HomeScreen(
         val notice = state.notice ?: return@LaunchedEffect
         Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
         onNoticeShown()
+    }
+
+    // The undo offer lives as long as the removed row does: undo restores the
+    // list, the timeout deletes the file, and either clears [removed]. The
+    // action's result is what restores — showSnackbar returns only after the
+    // tap, and nothing else would call [onUndoRemove].
+    LaunchedEffect(state.removed) {
+        val removed = state.removed
+        if (removed == null) {
+            snacks.currentSnackbarData?.dismiss()
+            return@LaunchedEffect
+        }
+        val result = snacks.showSnackbar(
+            message = "Deleted " + removed.name,
+            actionLabel = "Undo",
+            duration = SnackbarDuration.Indefinite,
+        )
+        if (result == SnackbarResult.ActionPerformed) {
+            onUndoRemove()
+        }
     }
 
     val active = FlitTab.valueOf(tab)
@@ -135,7 +166,10 @@ fun HomeScreen(
 
             Column(modifier = Modifier.weight(1f)) {
                 when (active) {
-                    FlitTab.Receive -> ReceiveTab(state)
+                    FlitTab.Receive -> ReceiveTab(
+                        state = state,
+                        onActions = { fileActions = it },
+                    )
                     FlitTab.Send -> SendTab(
                         state = state,
                         onChoose = onChoose,
@@ -151,6 +185,11 @@ fun HomeScreen(
                     )
                 }
             }
+
+            SnackbarHost(
+                hostState = snacks,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             BottomBar(active = active, onSelect = { tab = it.name })
         }
@@ -172,6 +211,21 @@ fun HomeScreen(
                 onUse = { addr, fingerprint ->
                     addressing = false
                     onUseAddress(addr, fingerprint)
+                },
+            )
+        }
+
+        fileActions?.let { file ->
+            FileActionsDialog(
+                file = file,
+                onDismiss = { fileActions = null },
+                onShare = {
+                    fileActions = null
+                    shareReceived(context, resolveReceived(context, file.name))
+                },
+                onDelete = {
+                    fileActions = null
+                    onRemoveReceived(file)
                 },
             )
         }
@@ -249,7 +303,7 @@ private fun IconTap(
  * as a thing, because this is the screen other devices send to.
  */
 @Composable
-private fun ReceiveTab(state: HomeState) {
+private fun ReceiveTab(state: HomeState, onActions: (ReceivedFile) -> Unit) {
     val colors = FlitPalette.colors
 
     LazyColumn(
@@ -334,7 +388,7 @@ private fun ReceiveTab(state: HomeState) {
                     is LedgerRow.File -> item(
                         key = "file${row.file.name}${row.file.modified}",
                     ) {
-                        ReceivedRow(row.file)
+                        ReceivedRow(row.file, onActions = onActions)
                     }
                 }
             }
@@ -815,9 +869,14 @@ private fun QuietAction(label: String, onClick: () -> Unit) {
     }
 }
 
-/** One received file: its extension in mono, its name, its size and its day. */
+/**
+ * One received file: its extension in mono, its name, its size and its day.
+ * Tap opens it in the app that owns its type; long-press offers share and
+ * delete, because those two are worth doing but not worth a visible affordance.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ReceivedRow(file: ReceivedFile) {
+private fun ReceivedRow(file: ReceivedFile, onActions: (ReceivedFile) -> Unit) {
     val colors = FlitPalette.colors
     val context = LocalContext.current
 
@@ -825,6 +884,12 @@ private fun ReceivedRow(file: ReceivedFile) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
+            .combinedClickable(
+                onClickLabel = "Open ${file.name}",
+                onClick = { if (!file.folder) openReceived(context, resolveReceived(context, file.name)) },
+                onLongClickLabel = "More actions",
+                onLongClick = { onActions(file) },
+            )
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1181,6 +1246,67 @@ private fun RenameDialog(
 
 /** Longest name the engine will announce. */
 private const val MAX_NAME_CHARS = 32
+
+/**
+ * What can be done with a received file. The name is the title; the actions
+ * are two quiet rows, and the destructive one wears the error colour.
+ */
+@Composable
+private fun FileActionsDialog(
+    file: ReceivedFile,
+    onDismiss: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val colors = FlitPalette.colors
+    val context = LocalContext.current
+    val size = Formatter.formatShortFileSize(context, file.bytes.toLong())
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        containerColor = colors.card,
+        title = {
+            Text(
+                text = file.name,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "$size · received " + whenChanged(file.modified.toLong()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink3,
+                )
+                Spacer(Modifier.height(10.dp))
+                if (!file.folder) {
+                    TextButton(
+                        onClick = onShare,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Share", modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                TextButton(
+                    onClick = onDelete,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = if (file.folder) "Delete folder" else "Delete",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {},
+    )
+}
 
 /** The way to reach a device whose announcement never arrived. */
 @Composable
