@@ -19,6 +19,9 @@ apps/desktop/src-tauri/gen/
 apps/android/.gradle/
 apps/android/local.properties
 apps/android/**/build/
+
+# Screenshot scratch used by the design review loop.
+.shots/
 # Generated from the Rust cdylib: `cargo ndk` writes the .so, the bindgen
 # writes the Kotlin. Neither belongs in the repository.
 apps/android/app/src/main/jniLibs/

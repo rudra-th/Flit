@@ -8,54 +8,68 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import dev.flit.android.R
 
-// The same paper-and-ink palette the desktop window uses, so the two screens
-// look like one product. Nothing here is decorative: the accent is reserved for
-// this device, the ink steps carry hierarchy, lines are borders you can see.
-private val Paper = Color(0xFFF6F5F2)
-private val Surface = Color(0xFFFFFFFF)
-private val Surface2 = Color(0xFFFAF9F7)
-private val Line = Color(0xFFE9E6E0)
-private val Ink = Color(0xFF15181C)
-private val Ink2 = Color(0xFF565E68)
-private val Accent = Color(0xFF0E7A5C)
-private val AccentSoft = Color(0xFFE9F5F0)
-private val AccentLine = Color(0xFFA9D8C8)
-private val Danger = Color(0xFFC0392F)
-private val DangerSoft = Color(0xFFFDECEB)
+/**
+ * The display face: used for the wordmark, the section titles, the device
+ * names, and the state words of a transfer. Everything factual — sizes,
+ * fingerprints, paths — stays in the system sans. One face carries the
+ * personality; the other carries the data.
+ */
+private val Serif = FontFamily(Font(R.font.instrument_serif))
 
-private val NightPaper = Color(0xFF14171A)
+// Paper and ink. The accent is spent only on what can be acted on: the one
+// button, the selection check, the progress fill. Hierarchy is carried by
+// tone and type, never by a border around every box.
+private val Paper = Color(0xFFF7F6F2)
+private val Card = Color(0xFFFFFFFF)
+private val Raised = Color(0xFFEFECE6)
+private val Line = Color(0xFFE6E2DA)
+private val Ink = Color(0xFF14161A)
+private val Ink2 = Color(0xFF575E66)
+private val Ink3 = Color(0xFF666E78)
+private val Accent = Color(0xFF0B6B4F)
+private val AccentSoft = Color(0xFFE6F2EC)
+private val Danger = Color(0xFFB3261E)
+private val DangerSoft = Color(0xFFFCEBE8)
+
+private val NightGround = Color(0xFF14171A)
 private val NightSurface = Color(0xFF1B1F23)
-private val NightSurface2 = Color(0xFF20242A)
+private val NightRaised = Color(0xFF24292F)
 private val NightLine = Color(0xFF2A2F36)
 private val NightInk = Color(0xFFEEF1F4)
 private val NightInk2 = Color(0xFFA8B1BB)
+private val NightInk3 = Color(0xFF79838D)
 private val NightAccent = Color(0xFF3EC49A)
 private val NightAccentSoft = Color(0xFF123A30)
-private val NightAccentLine = Color(0xFF2C6D5C)
 private val NightDanger = Color(0xFFFF8A80)
 private val NightDangerSoft = Color(0xFF3A1D1A)
 
-/** Extra colours the screen needs beyond Material's slots. */
+/** Colours the screens need beyond Material's slots. */
 data class FlitColors(
     val ink2: Color,
+    val ink3: Color,
     val line: Color,
     val card: Color,
+    val raised: Color,
+    val paper: Color,
     val accentSoft: Color,
-    val accentLine: Color,
     val dangerSoft: Color,
 )
 
 private val LocalFlitColors = androidx.compose.runtime.staticCompositionLocalOf {
     FlitColors(
         ink2 = Ink2,
+        ink3 = Ink3,
         line = Line,
-        card = Surface,
+        card = Card,
+        raised = Raised,
+        paper = Paper,
         accentSoft = AccentSoft,
-        accentLine = AccentLine,
         dangerSoft = DangerSoft,
     )
 }
@@ -73,11 +87,11 @@ fun FlitTheme(content: @Composable () -> Unit) {
         darkColorScheme(
             primary = NightAccent,
             onPrimary = Color(0xFF06231B),
-            background = NightPaper,
+            background = NightGround,
             onBackground = NightInk,
             surface = NightSurface,
             onSurface = NightInk,
-            surfaceVariant = NightSurface2,
+            surfaceVariant = NightRaised,
             onSurfaceVariant = NightInk2,
             outline = NightLine,
             error = NightDanger,
@@ -90,9 +104,9 @@ fun FlitTheme(content: @Composable () -> Unit) {
             onPrimary = Color.White,
             background = Paper,
             onBackground = Ink,
-            surface = Surface,
+            surface = Card,
             onSurface = Ink,
-            surfaceVariant = Surface2,
+            surfaceVariant = Raised,
             onSurfaceVariant = Ink2,
             outline = Line,
             error = Danger,
@@ -104,19 +118,23 @@ fun FlitTheme(content: @Composable () -> Unit) {
     val extra = if (dark) {
         FlitColors(
             ink2 = NightInk2,
+            ink3 = NightInk3,
             line = NightLine,
             card = NightSurface,
+            raised = NightRaised,
+            paper = NightGround,
             accentSoft = NightAccentSoft,
-            accentLine = NightAccentLine,
             dangerSoft = NightDangerSoft,
         )
     } else {
         FlitColors(
             ink2 = Ink2,
+            ink3 = Ink3,
             line = Line,
-            card = Surface,
+            card = Card,
+            raised = Raised,
+            paper = Paper,
             accentSoft = AccentSoft,
-            accentLine = AccentLine,
             dangerSoft = DangerSoft,
         )
     }
@@ -125,28 +143,66 @@ fun FlitTheme(content: @Composable () -> Unit) {
         MaterialTheme(
             colorScheme = scheme,
             typography = Typography(
-                // Android's system face is deliberate: bundling a webfont into
-                // the APK costs a megabyte to look like every other app.
                 displaySmall = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 30.sp,
-                    letterSpacing = (-0.6).sp,
+                    fontFamily = Serif,
+                    fontSize = 32.sp,
+                    lineHeight = 38.sp,
+                    letterSpacing = (-0.3).sp,
                 ),
+                // Section titles and the state words of a transfer.
+                headlineSmall = TextStyle(
+                    fontFamily = Serif,
+                    fontSize = 24.sp,
+                    lineHeight = 30.sp,
+                    letterSpacing = (-0.2).sp,
+                ),
+                // Device names, and the name in the identity sheet.
+                titleLarge = TextStyle(
+                    fontFamily = Serif,
+                    fontSize = 21.sp,
+                    lineHeight = 26.sp,
+                    letterSpacing = (-0.1).sp,
+                ),
+                // Factual headlines: sans, small, medium weight.
                 titleMedium = TextStyle(
                     fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp,
+                    lineHeight = 21.sp,
+                    letterSpacing = (-0.1).sp,
+                ),
+                titleSmall = TextStyle(
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                ),
+                bodyLarge = TextStyle(
+                    fontFamily = FontFamily.SansSerif,
+                    fontSize = 16.sp,
+                    lineHeight = 24.sp,
                 ),
                 bodyMedium = TextStyle(
                     fontFamily = FontFamily.SansSerif,
                     fontSize = 14.sp,
+                    lineHeight = 21.sp,
+                ),
+                bodySmall = TextStyle(
+                    fontFamily = FontFamily.SansSerif,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp,
+                ),
+                labelMedium = TextStyle(
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.5.sp,
+                    lineHeight = 18.sp,
                 ),
                 labelSmall = TextStyle(
                     fontFamily = FontFamily.SansSerif,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp,
-                    letterSpacing = 1.1.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
                 ),
             ),
             content = content,
