@@ -442,9 +442,8 @@ mod tests {
         let socket = test_socket();
         let group = Ipv4Addr::from(MULTICAST_GROUP);
 
-        let joined =
-            join_where_possible(&socket, group, &[DEAD_INTERFACE, Ipv4Addr::UNSPECIFIED])
-                .expect("a joinable interface keeps discovery alive");
+        let joined = join_where_possible(&socket, group, &[DEAD_INTERFACE, Ipv4Addr::UNSPECIFIED])
+            .expect("a joinable interface keeps discovery alive");
         assert_eq!(joined, vec![Ipv4Addr::UNSPECIFIED]);
     }
 
