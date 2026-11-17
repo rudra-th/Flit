@@ -6,8 +6,9 @@
 use std::{convert::Infallible, net::IpAddr, sync::Arc};
 
 use flit_api::{
-    API_PREFIX, ApiErrorBody, ErrorCode, FinishRequest, Info, MAX_FINISH_BYTES, MAX_ITEMS,
-    MAX_MANIFEST_BYTES, ManifestItem, PIN_HEADER, PROTO_HEADER, PROTO_VERSION, PROTO_VERSION_STR,
+    ALIAS_HEADER, API_PREFIX, ApiErrorBody, DEVICE_HEADER, ErrorCode, FinishRequest, Info,
+    MAX_FINISH_BYTES, MAX_ITEMS, MAX_MANIFEST_BYTES, ManifestItem, PIN_HEADER, PROTO_HEADER,
+    PROTO_VERSION, PROTO_VERSION_STR, decode_header_text,
 };
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
@@ -18,7 +19,11 @@ use hyper::{
 use sha2::Digest;
 use tokio::io::{AsyncWriteExt, BufWriter};
 
-use crate::{pin::PinGuard, session::Sessions};
+use crate::{
+    consent::{OfferContext, OfferGate},
+    pin::PinGuard,
+    session::Sessions,
+};
 
 /// Every response body, boxed so handlers can differ in shape.
 pub type ResponseBody = BoxBody<Bytes, Infallible>;
@@ -38,16 +43,20 @@ pub struct State {
     pub sessions: Sessions,
     /// PIN policy and recent failures.
     pub pins: PinGuard,
+    /// The shell's consent policy, when one is installed.
+    pub offer_gate: Option<OfferGate>,
 }
 
 /// Route one request. Unknown shapes never reach the filesystem.
 ///
-/// The peer address is used only for PIN throttling; it never grants access to
-/// anything, because the TLS certificate and the PIN are the whole policy.
+/// The peer address is used for PIN throttling and rate limiting; it never
+/// grants access to anything. `fingerprint` is the key the client proved it
+/// holds during the handshake, so it is the only identity a session binds to.
 pub async fn route(
     request: Request<Incoming>,
     state: Arc<State>,
     peer: IpAddr,
+    fingerprint: Option<String>,
 ) -> Response<ResponseBody> {
     if let Some(version) = request.headers().get(PROTO_HEADER) {
         let version = version.to_str().unwrap_or("<invalid>");
@@ -79,17 +88,21 @@ pub async fn route(
 
     match (method, segments.as_slice()) {
         (Method::GET, ["api", "v1", "info"]) => json(&state.info),
-        (Method::POST, ["api", "v1", "upload"]) => prepare(request, &state).await,
+        (Method::POST, ["api", "v1", "upload"]) => {
+            prepare(request, &state, peer, fingerprint).await
+        }
         (Method::PUT, ["api", "v1", "upload", session, item]) => {
-            upload(request, &state, session, item).await
+            upload(request, &state, session, item, fingerprint.as_deref()).await
         }
         (Method::POST, ["api", "v1", "upload", session, "pack"]) => {
-            pack(request, &state, session).await
+            pack(request, &state, session, fingerprint.as_deref()).await
         }
         (Method::POST, ["api", "v1", "upload", session, "finish"]) => {
-            finish(request, &state, session).await
+            finish(request, &state, session, fingerprint.as_deref()).await
         }
-        (Method::DELETE, ["api", "v1", "upload", session]) => cancel(&state, session).await,
+        (Method::DELETE, ["api", "v1", "upload", session]) => {
+            cancel(&state, session, fingerprint.as_deref()).await
+        }
         _ => error(
             ErrorCode::NotFound,
             format!("no such endpoint: {} {path}", request.method()),
@@ -98,16 +111,56 @@ pub async fn route(
 }
 
 /// `POST /api/v1/upload`: streamed NDJSON manifest, one item per line.
-async fn prepare(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
+async fn prepare(
+    request: Request<Incoming>,
+    state: &Arc<State>,
+    peer: IpAddr,
+    fingerprint: Option<String>,
+) -> Response<ResponseBody> {
+    // Headers are read before the body is consumed. Both values are claims the
+    // person sees, never identity: `fingerprint` comes from the certificate.
+    let context = OfferContext {
+        peer,
+        fingerprint,
+        device_id: header_text(request.headers(), DEVICE_HEADER),
+        alias: header_text(request.headers(), ALIAS_HEADER),
+    };
+
     let items = match read_manifest(request.into_body()).await {
         Ok(items) => items,
         Err(code) => return error(code, "manifest could not be read"),
     };
 
-    match state.sessions.begin(items).await {
+    match state
+        .sessions
+        .begin(items, context, state.offer_gate.as_ref())
+        .await
+    {
         Ok((_session, response)) => json_with_status(StatusCode::CREATED, &response),
-        Err(code) => error(code, "manifest was refused"),
+        Err(code) => error(code, message_for(code)),
     }
+}
+
+/// One sentence behind a whole-request refusal.
+fn message_for(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Declined => "this transfer was declined",
+        ErrorCode::NoAnswer => "nobody answered the transfer offer in time",
+        ErrorCode::Busy => "this device is already receiving another transfer",
+        ErrorCode::RateLimited => "too many transfer attempts; try again in a minute",
+        _ => "manifest was refused",
+    }
+}
+
+/// A header as text, when it is present and valid UTF-8.
+///
+/// Display names are percent-encoded on the way in so they can hold any script;
+/// decoding an ASCII value leaves it unchanged, so this is safe for every header.
+fn header_text(headers: &hyper::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(decode_header_text)
 }
 
 /// `PUT /api/v1/upload/{session}/{item}`: raw bytes, optional resume.
@@ -116,6 +169,7 @@ async fn upload(
     state: &Arc<State>,
     session_id: &str,
     item_id: &str,
+    fingerprint: Option<&str>,
 ) -> Response<ResponseBody> {
     let Some(session) = state.sessions.get(session_id).await else {
         return error(ErrorCode::NotFound, "no such session");
@@ -123,6 +177,12 @@ async fn upload(
     let mut session = session.lock().await;
     if session.cancelled {
         return error(ErrorCode::NotFound, "session was cancelled");
+    }
+    if !session.owned_by(fingerprint) {
+        return error(
+            ErrorCode::Unauthorized,
+            "this session belongs to another device",
+        );
     }
 
     let (parts, body) = request.into_parts();
@@ -242,6 +302,7 @@ async fn pack(
     request: Request<Incoming>,
     state: &Arc<State>,
     session_id: &str,
+    fingerprint: Option<&str>,
 ) -> Response<ResponseBody> {
     let Some(session) = state.sessions.get(session_id).await else {
         return error(ErrorCode::NotFound, "no such session");
@@ -249,6 +310,12 @@ async fn pack(
     let mut session = session.lock().await;
     if session.cancelled {
         return error(ErrorCode::NotFound, "session was cancelled");
+    }
+    if !session.owned_by(fingerprint) {
+        return error(
+            ErrorCode::Unauthorized,
+            "this session belongs to another device",
+        );
     }
 
     let mut reader = PackReader::new(request.into_body());
@@ -412,6 +479,7 @@ async fn finish(
     request: Request<Incoming>,
     state: &Arc<State>,
     session_id: &str,
+    fingerprint: Option<&str>,
 ) -> Response<ResponseBody> {
     let request: FinishRequest = match read_json(request.into_body(), MAX_FINISH_BYTES).await {
         Ok(body) => body,
@@ -426,6 +494,12 @@ async fn finish(
         let mut guard = session.lock().await;
         if guard.cancelled {
             return error(ErrorCode::NotFound, "session was cancelled");
+        }
+        if !guard.owned_by(fingerprint) {
+            return error(
+                ErrorCode::Unauthorized,
+                "this session belongs to another device",
+            );
         }
         let response = state.sessions.finish(&mut guard, &request.item_ids);
         // `finish` only reports the ids it was asked about. The session is done
@@ -445,7 +519,22 @@ async fn finish(
 }
 
 /// `DELETE /api/v1/upload/{session}`: stop and remove `.part` files.
-async fn cancel(state: &Arc<State>, session_id: &str) -> Response<ResponseBody> {
+async fn cancel(
+    state: &Arc<State>,
+    session_id: &str,
+    fingerprint: Option<&str>,
+) -> Response<ResponseBody> {
+    let Some(session) = state.sessions.get(session_id).await else {
+        return error(ErrorCode::NotFound, "no such session");
+    };
+    // Check before taking: a device that did not open the session must not be
+    // able to cancel someone else's transfer by guessing the id.
+    if !session.lock().await.owned_by(fingerprint) {
+        return error(
+            ErrorCode::Unauthorized,
+            "this session belongs to another device",
+        );
+    }
     match state.sessions.take(session_id).await {
         Some(_) => empty(StatusCode::NO_CONTENT),
         None => error(ErrorCode::NotFound, "no such session"),
@@ -621,9 +710,13 @@ fn status_for(code: ErrorCode) -> StatusCode {
     match code {
         ErrorCode::BadRequest => StatusCode::BAD_REQUEST,
         ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
-        ErrorCode::PinRequired | ErrorCode::PinIncorrect => StatusCode::FORBIDDEN,
+        ErrorCode::PinRequired | ErrorCode::PinIncorrect | ErrorCode::Declined => {
+            StatusCode::FORBIDDEN
+        }
         ErrorCode::NotFound => StatusCode::NOT_FOUND,
-        ErrorCode::Conflict | ErrorCode::Cancelled => StatusCode::CONFLICT,
+        ErrorCode::NoAnswer => StatusCode::REQUEST_TIMEOUT,
+        ErrorCode::Busy | ErrorCode::Conflict | ErrorCode::Cancelled => StatusCode::CONFLICT,
+        ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         ErrorCode::Unsupported => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         ErrorCode::DiskFull => StatusCode::INSUFFICIENT_STORAGE,
@@ -680,6 +773,13 @@ mod tests {
     #[test]
     fn status_codes_follow_the_specification() {
         assert_eq!(status_for(ErrorCode::PinIncorrect), StatusCode::FORBIDDEN);
+        assert_eq!(status_for(ErrorCode::Declined), StatusCode::FORBIDDEN);
+        assert_eq!(status_for(ErrorCode::NoAnswer), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(status_for(ErrorCode::Busy), StatusCode::CONFLICT);
+        assert_eq!(
+            status_for(ErrorCode::RateLimited),
+            StatusCode::TOO_MANY_REQUESTS
+        );
         assert_eq!(
             status_for(ErrorCode::TooLarge),
             StatusCode::PAYLOAD_TOO_LARGE

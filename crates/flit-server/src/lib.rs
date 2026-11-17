@@ -11,19 +11,21 @@
 
 #![deny(missing_docs)]
 
+mod consent;
 mod http;
 mod pin;
 mod session;
 
+pub use consent::{Offer, OfferContext, OfferDecision, OfferGate};
 pub use http::{ResponseBody, State};
 pub use pin::{MAX_ATTEMPTS, PinError, PinGuard};
-pub use session::{Commit, Item, Session, Sessions, is_sha256};
+pub use session::{ACTIVE_WINDOW, Commit, Item, PREPARE_ATTEMPTS, Session, Sessions, is_sha256};
 
 use std::{
     future::Future,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -31,6 +33,13 @@ use flit_api::{DEFAULT_ALIAS, DeviceType, Info, PROTO_VERSION, TLS_PORT, caps};
 use flit_crypto::{Identity, TlsError};
 use hyper::{Request, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
+use rustls::{
+    DigitallySignedStruct, Error as RustlsError, SignatureScheme,
+    client::danger::HandshakeSignatureValid,
+    crypto::WebPkiSupportedAlgorithms,
+    pki_types::{CertificateDer, DistinguishedName, UnixTime},
+    server::danger::{ClientCertVerified, ClientCertVerifier},
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
@@ -50,7 +59,7 @@ pub fn implemented_caps() -> Vec<String> {
 }
 
 /// How the server presents itself and where files land.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
     /// Name shown to other devices. Cosmetic and not trusted.
     pub alias: String,
@@ -68,6 +77,9 @@ pub struct ServerConfig {
     /// `None` is an open receiver. `pin_required` in `/info` is derived from
     /// this, so the two can never disagree.
     pub pin: Option<String>,
+    /// Consent policy, when the shell has one. `None` accepts every manifest,
+    /// which is the CLI's and the test suite's behaviour.
+    pub offer_gate: Option<OfferGate>,
 }
 
 impl Default for ServerConfig {
@@ -79,7 +91,24 @@ impl Default for ServerConfig {
             root: default_receive_dir(),
             caps: implemented_caps(),
             pin: None,
+            offer_gate: None,
         }
+    }
+}
+
+impl std::fmt::Debug for ServerConfig {
+    /// Never try to print a closure; say whether one is installed instead.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerConfig")
+            .field("alias", &self.alias)
+            .field("device_type", &self.device_type)
+            .field("bind", &self.bind)
+            .field("root", &self.root)
+            .field("caps", &self.caps)
+            .field("pin", &self.pin.as_ref().map(|_| "<set>"))
+            .field("offer_gate", &self.offer_gate.is_some())
+            .finish()
     }
 }
 
@@ -116,6 +145,13 @@ impl ServerConfig {
     #[must_use]
     pub fn with_pin(mut self, pin: impl Into<String>) -> Self {
         self.pin = Some(pin.into());
+        self
+    }
+
+    /// Install the shell's consent policy for incoming offers.
+    #[must_use]
+    pub fn with_offer_gate(mut self, gate: OfferGate) -> Self {
+        self.offer_gate = Some(gate);
         self
     }
 }
@@ -194,7 +230,12 @@ impl Server {
         ))
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| ServerError::TlsConfig(e.to_string()))?
-        .with_no_client_auth()
+        // Client certificates are offered but never required: the `/info` probe
+        // and a browser need to reach the port, while every Flit sender can now
+        // prove an identity the receiver can bind trust to. The verifier accepts
+        // any certificate because the identity is the key inside it, not a CA
+        // chain; an unusable certificate simply yields no fingerprint.
+        .with_client_cert_verifier(Arc::new(AcceptAnyClientCert))
         .with_single_cert(tls.cert_chain.clone(), tls.key)
         .map_err(|e| ServerError::TlsConfig(e.to_string()))?;
         tls_config.alpn_protocols = vec![b"flit/1".to_vec()];
@@ -219,6 +260,7 @@ impl Server {
                 info,
                 sessions,
                 pins,
+                offer_gate: config.offer_gate,
             }),
         })
     }
@@ -298,9 +340,17 @@ async fn handle_connection(
         }
     };
 
+    // The fingerprint is fixed for the life of the connection: it comes from
+    // the certificate the client proved it holds during the handshake.
+    let fingerprint = peer_fingerprint(&tls);
     let service = service_fn(move |request: Request<Incoming>| {
         let state = Arc::clone(&state);
-        async move { Ok::<_, std::convert::Infallible>(http::route(request, state, peer.ip()).await) }
+        let fingerprint = fingerprint.clone();
+        async move {
+            Ok::<_, std::convert::Infallible>(
+                http::route(request, state, peer.ip(), fingerprint).await,
+            )
+        }
     });
 
     if let Err(err) = hyper::server::conn::http1::Builder::new()
@@ -308,6 +358,82 @@ async fn handle_connection(
         .await
     {
         log::debug!("connection from {peer} ended: {err}");
+    }
+}
+
+/// The identity a connection proved, if it presented a usable certificate.
+///
+/// A certificate that is not an Ed25519 identity yields `None` rather than an
+/// error: the connection is still a valid probe or browser, it simply has no
+/// fingerprint to bind consent to.
+fn peer_fingerprint(tls: &tokio_rustls::server::TlsStream<TcpStream>) -> Option<String> {
+    let (_, connection) = tls.get_ref();
+    let certificate = connection.peer_certificates()?.first()?;
+    let key = flit_crypto::ed25519_public_key(certificate.as_ref()).ok()?;
+    Some(flit_crypto::fingerprint_of(&key))
+}
+
+/// Signature algorithms the ring provider can verify.
+fn signature_algorithms() -> &'static WebPkiSupportedAlgorithms {
+    static ALGORITHMS: OnceLock<WebPkiSupportedAlgorithms> = OnceLock::new();
+    ALGORITHMS
+        .get_or_init(|| rustls::crypto::ring::default_provider().signature_verification_algorithms)
+}
+
+/// Accepts any client certificate, because the certificate *is* the identity.
+///
+/// There is no CA to chain to: each device self-signs a certificate whose public
+/// key is its Ed25519 identity. The receiver reads that key back out of the
+/// certificate and binds consent to its fingerprint. The handshake signature is
+/// still verified, so a client cannot present someone else's certificate without
+/// holding the matching key.
+#[derive(Debug)]
+struct AcceptAnyClientCert;
+
+impl ClientCertVerifier for AcceptAnyClientCert {
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        // No CA hints: an empty list means "offer a certificate if you have
+        // one", which is exactly what any Flit sender does.
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, RustlsError> {
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, signature_algorithms())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, signature_algorithms())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        signature_algorithms().supported_schemes()
     }
 }
 
@@ -377,6 +503,14 @@ mod tests {
         let caps = implemented_caps();
         assert!(caps.contains(&caps::PACK.to_string()));
         assert!(!caps.contains(&caps::PROGRESS_SSE.to_string()));
+    }
+
+    #[test]
+    fn client_certificates_are_offered_but_not_required() {
+        let verifier = AcceptAnyClientCert;
+        assert!(verifier.offer_client_auth());
+        assert!(!verifier.client_auth_mandatory());
+        assert!(verifier.root_hint_subjects().is_none());
     }
 
     #[test]

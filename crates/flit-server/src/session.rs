@@ -10,12 +10,13 @@
 //! * a name collision becomes `report (2).pdf`, never an overwrite.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{ErrorKind, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use flit_api::{
@@ -26,11 +27,33 @@ use flit_storage::{conflict_name, safe_join, sanitize_relative};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use crate::consent::{Offer, OfferContext, OfferDecision, OfferGate};
+
 /// Directory under the destination root that holds in-flight data.
 const WORK_DIR: &str = ".flit";
 
 /// How long an abandoned session may keep its `.part` files.
 const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// How long a receiver stays busy after opening a session.
+///
+/// One transfer at a time keeps the consent question unambiguous: a second
+/// sender arriving mid-transfer would otherwise have to wait behind the same
+/// screen, and a person cannot meaningfully answer two offers at once.
+pub const ACTIVE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Prepare attempts allowed from one address per [`ADMISSION_WINDOW`].
+pub const PREPARE_ATTEMPTS: usize = 12;
+
+/// The window the attempt counter covers.
+pub const ADMISSION_WINDOW: Duration = Duration::from_secs(60);
+
+/// How many distinct addresses the limiter remembers before it prunes.
+///
+/// A receiver that has been up for months meets a lot of addresses; past this
+/// point it sweeps the expired ones instead of turning into a log of everyone
+/// who ever knocked.
+const ADDRESS_MEMORY: usize = 256;
 
 /// One item's in-flight state.
 pub struct Item {
@@ -112,6 +135,12 @@ pub struct Session {
     pub dir: PathBuf,
     /// Items by id.
     pub items: HashMap<String, Item>,
+    /// Fingerprint of the device that opened the session.
+    ///
+    /// `None` means the sender presented no client certificate. Every later
+    /// request must present the same value, so a session id alone is not a
+    /// capability another device can borrow.
+    pub owner: Option<String>,
     /// Set when either side cancels; in-flight uploads must stop.
     pub cancelled: bool,
     /// When this session was created, for sweeping.
@@ -120,7 +149,12 @@ pub struct Session {
 
 impl Session {
     /// Create the working directory for a new session.
-    fn create(root: &Path, id: String, key: String) -> std::io::Result<Self> {
+    fn create(
+        root: &Path,
+        id: String,
+        key: String,
+        owner: Option<String>,
+    ) -> std::io::Result<Self> {
         let dir = root.join(WORK_DIR).join("parts").join(&id);
         fs::create_dir_all(&dir)?;
         Ok(Self {
@@ -129,9 +163,19 @@ impl Session {
             root: root.to_path_buf(),
             dir,
             items: HashMap::new(),
+            owner,
             cancelled: false,
             created: SystemTime::now(),
         })
+    }
+
+    /// Whether `fingerprint` is allowed to keep using this session.
+    ///
+    /// Both sides being `None` matches: a receiver that accepts a sender
+    /// without a certificate cannot later demand one for the same session.
+    #[must_use]
+    pub fn owned_by(&self, fingerprint: Option<&str>) -> bool {
+        self.owner.as_deref() == fingerprint
     }
 
     /// Validate one manifest item and reserve its paths.
@@ -321,10 +365,19 @@ impl Session {
     }
 }
 
-/// All live sessions of one server.
+/// All live sessions of one server, plus the admission state that decides
+/// whether a new offer may even be put to the person.
 pub struct Sessions {
     root: PathBuf,
     map: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
+    admission: std::sync::Mutex<Admission>,
+}
+
+/// Attempts per address and the window one open session claims.
+#[derive(Default)]
+struct Admission {
+    recent: HashMap<IpAddr, Vec<Instant>>,
+    busy_until: Option<Instant>,
 }
 
 impl Sessions {
@@ -335,7 +388,50 @@ impl Sessions {
         Ok(Self {
             root,
             map: Mutex::new(HashMap::new()),
+            admission: std::sync::Mutex::new(Admission::default()),
         })
+    }
+
+    /// Count one prepare attempt from `peer`, refusing the ones over the limit.
+    ///
+    /// Counted before the offer is shown, so a sender that spams prepare cannot
+    /// turn the consent sheet into a denial-of-service against the person.
+    fn record_attempt(&self, peer: IpAddr) -> Result<(), ErrorCode> {
+        let mut admission = self.admission.lock().expect("poisoned admission lock");
+        let now = Instant::now();
+        if admission.recent.len() >= ADDRESS_MEMORY {
+            admission.recent.retain(|_, times| {
+                times.retain(|at| now.duration_since(*at) < ADMISSION_WINDOW);
+                !times.is_empty()
+            });
+        }
+        let recent = admission.recent.entry(peer).or_default();
+        recent.retain(|at| now.duration_since(*at) < ADMISSION_WINDOW);
+        if recent.len() >= PREPARE_ATTEMPTS {
+            return Err(ErrorCode::RateLimited);
+        }
+        recent.push(now);
+        Ok(())
+    }
+
+    /// Whether a recently opened session still owns the receiver.
+    fn busy(&self) -> bool {
+        let admission = self.admission.lock().expect("poisoned admission lock");
+        admission
+            .busy_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Claim the receiver for the next [`ACTIVE_WINDOW`].
+    fn claim(&self) {
+        let mut admission = self.admission.lock().expect("poisoned admission lock");
+        admission.busy_until = Some(Instant::now() + ACTIVE_WINDOW);
+    }
+
+    /// Release the claim when the session is finished or cancelled.
+    fn release(&self) {
+        let mut admission = self.admission.lock().expect("poisoned admission lock");
+        admission.busy_until = None;
     }
 
     /// The destination root.
@@ -350,7 +446,9 @@ impl Sessions {
     /// manifest itself is unusable (empty, too many items, too many bytes).
     pub async fn begin(
         &self,
-        manifest: Vec<ManifestItem>,
+        mut manifest: Vec<ManifestItem>,
+        context: OfferContext,
+        gate: Option<&OfferGate>,
     ) -> Result<(Arc<Mutex<Session>>, SessionResponse), ErrorCode> {
         if manifest.is_empty() {
             return Err(ErrorCode::BadRequest);
@@ -363,21 +461,84 @@ impl Sessions {
             return Err(ErrorCode::TooLarge);
         }
 
+        self.record_attempt(context.peer)?;
         self.sweep().await;
 
         // A sender that was killed and re-ran the same command sends the same
         // manifest. Hand back the open session so its `.part` bytes are not
         // thrown away; the first `PUT` resumes from what the receiver has.
+        // Adoption is checked before the busy gate: resuming the session that
+        // owns the receiver is not a second transfer.
         let key = manifest_key(&manifest);
-        if let Some(adopted) = self.adopt(&key, &manifest).await {
+        if let Some(adopted) = self
+            .adopt(&key, &manifest, context.fingerprint.as_deref())
+            .await
+        {
             log::debug!("adopted an open session for the same manifest");
+            // Resuming is still the one transfer the receiver is doing, so the
+            // window restarts with it.
+            self.claim();
             return Ok(adopted);
+        }
+
+        if self.busy() {
+            return Err(ErrorCode::Busy);
+        }
+
+        // Claim the receiver before asking, not after: the question itself is
+        // the transfer slot, so a second device cannot put a second sheet on
+        // the same screen while this one is unanswered.
+        self.claim();
+
+        let bytes = manifest.iter().map(item_bytes).sum();
+        let decision = match gate {
+            Some(gate) => {
+                gate(Offer {
+                    peer: context.peer,
+                    fingerprint: context.fingerprint.clone(),
+                    device_id: context.device_id,
+                    alias: context.alias,
+                    items: manifest.clone(),
+                    bytes,
+                })
+                .await
+            }
+            // A receiver without a shell to ask accepts everything. The engine
+            // always installs a gate; this is the CLI's and tests' behaviour.
+            None => OfferDecision::Accept(manifest.iter().map(|item| item.id.clone()).collect()),
+        };
+        manifest = match decision {
+            OfferDecision::Accept(ids) => {
+                let keep: HashSet<String> = ids.into_iter().collect();
+                manifest
+                    .into_iter()
+                    .filter(|item| keep.contains(&item.id))
+                    .collect()
+            }
+            OfferDecision::Decline => {
+                self.release();
+                return Err(ErrorCode::Declined);
+            }
+            OfferDecision::NoAnswer => {
+                self.release();
+                return Err(ErrorCode::NoAnswer);
+            }
+        };
+        if manifest.is_empty() {
+            self.release();
+            return Err(ErrorCode::Declined);
         }
 
         let id = new_session_id();
         log::debug!("opening session {id} for {} items", manifest.len());
         let mut session =
-            Session::create(&self.root, id.clone(), key).map_err(|_| ErrorCode::Internal)?;
+            match Session::create(&self.root, id.clone(), key, context.fingerprint.clone()) {
+                Ok(session) => session,
+                Err(_) => {
+                    self.release();
+                    return Err(ErrorCode::Internal);
+                }
+            };
         let mut accepted = Vec::new();
         let mut rejected = Vec::new();
         for (index, item) in manifest.into_iter().enumerate() {
@@ -390,6 +551,7 @@ impl Sessions {
 
         if accepted.is_empty() {
             session.cleanup();
+            self.release();
             return Err(ErrorCode::BadRequest);
         }
 
@@ -420,12 +582,19 @@ impl Sessions {
         &self,
         key: &str,
         manifest: &[ManifestItem],
+        fingerprint: Option<&str>,
     ) -> Option<(Arc<Mutex<Session>>, SessionResponse)> {
         let map = self.map.lock().await;
         for session in map.values() {
             let Ok(guard) = session.try_lock() else {
                 continue;
             };
+            // A session id is a capability, but only for the device that opened
+            // it: a second sender with the same manifest must not inherit
+            // someone else's half-written bytes.
+            if !guard.owned_by(fingerprint) {
+                continue;
+            }
             if guard.cancelled || guard.key != key || guard.items.values().any(|item| item.done) {
                 continue;
             }
@@ -471,6 +640,9 @@ impl Sessions {
             let mut guard = session.lock().await;
             guard.cancelled = true;
             guard.cleanup();
+            // The receiver becomes free the moment the transfer ends, so
+            // sending a second batch does not have to wait out the window.
+            self.release();
         }
         session
     }
@@ -542,7 +714,17 @@ pub fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// 64 random bits, rendered as lowercase hex.
+/// Payload bytes an item represents.
+///
+/// Text travels inline, so its manifest `size` is zero while its bytes are the
+/// UTF-8 payload. The free-space number a person sees must count those too.
+fn item_bytes(item: &ManifestItem) -> u64 {
+    match item.kind {
+        ItemKind::Text => item.text.as_deref().map_or(0, |text| text.len() as u64),
+        ItemKind::File => item.size,
+    }
+}
+
 /// Digest of everything that makes a manifest mean the same transfer.
 ///
 /// Item ids are included because the client derives them from position in the
@@ -568,6 +750,7 @@ fn manifest_key(manifest: &[ManifestItem]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// 64 random bits, rendered as lowercase hex.
 fn new_session_id() -> String {
     let mut bytes = [0u8; 8];
     if getrandom::getrandom(&mut bytes).is_err() {
@@ -643,9 +826,21 @@ mod tests {
         item.received += data.len() as u64;
     }
 
+    fn context() -> OfferContext {
+        OfferContext {
+            peer: "127.0.0.1".parse().unwrap(),
+            fingerprint: None,
+            device_id: None,
+            alias: None,
+        }
+    }
+
     async fn open_session(root: &Path, items: Vec<ManifestItem>) -> Arc<Mutex<Session>> {
         let sessions = Sessions::new(root).unwrap();
-        let (session, response) = sessions.begin(items).await.expect("session");
+        let (session, response) = sessions
+            .begin(items, context(), None)
+            .await
+            .expect("session");
         assert_eq!(response.accepted.len(), 1);
         session
     }
@@ -764,7 +959,7 @@ mod tests {
         items.push(file_item("abs", "/etc/passwd", b"nope"));
         items.push(file_item("dev", "CON.txt", b"nope"));
 
-        let (session, response) = sessions.begin(items).await.unwrap();
+        let (session, response) = sessions.begin(items, context(), None).await.unwrap();
         assert_eq!(response.accepted, vec!["ok".to_string()]);
         assert_eq!(response.rejected.len(), 3);
         assert!(
@@ -791,7 +986,10 @@ mod tests {
             file_item("i2", "two.bin", b"second item bytes"),
         ];
 
-        let (session, first) = sessions.begin(manifest.clone()).await.unwrap();
+        let (session, first) = sessions
+            .begin(manifest.clone(), context(), None)
+            .await
+            .unwrap();
         assert_eq!(first.accepted, vec!["i1".to_string(), "i2".to_string()]);
 
         // The sender dies mid-item; the receiver keeps what it already wrote.
@@ -803,7 +1001,10 @@ mod tests {
         }
 
         // The same command again must not throw those bytes away.
-        let (resumed, second) = sessions.begin(manifest.clone()).await.unwrap();
+        let (resumed, second) = sessions
+            .begin(manifest.clone(), context(), None)
+            .await
+            .unwrap();
         assert_eq!(second.session_id, first.session_id);
         assert_eq!(second.accepted, first.accepted);
         assert!(second.rejected.is_empty());
@@ -814,8 +1015,14 @@ mod tests {
         assert!(Arc::ptr_eq(&session, &resumed));
 
         // A different transfer gets a different session, even on the same root.
+        // Finish the open session first: the receiver admits one at a time.
+        sessions.take(&first.session_id).await;
         let (fresh, third) = sessions
-            .begin(vec![file_item("i1", "other.bin", b"different")])
+            .begin(
+                vec![file_item("i1", "other.bin", b"different")],
+                context(),
+                None,
+            )
             .await
             .unwrap();
         assert_ne!(third.session_id, first.session_id);
@@ -834,7 +1041,10 @@ mod tests {
         let data = b"committed";
         let manifest = vec![file_item("i1", "done.bin", data)];
 
-        let (session, first) = sessions.begin(manifest.clone()).await.unwrap();
+        let (session, first) = sessions
+            .begin(manifest.clone(), context(), None)
+            .await
+            .unwrap();
         {
             let mut guard = session.lock().await;
             feed(guard.items.get_mut("i1").unwrap(), data);
@@ -842,8 +1052,10 @@ mod tests {
         }
 
         // Re-sending the identical manifest starts over rather than reporting
-        // an item the sender still has as already finished.
-        let (second_session, second) = sessions.begin(manifest).await.unwrap();
+        // an item the sender still has as already finished. The finished
+        // session is gone by then, so the receiver is free to admit another.
+        sessions.take(&first.session_id).await;
+        let (second_session, second) = sessions.begin(manifest, context(), None).await.unwrap();
         assert_ne!(second.session_id, first.session_id);
         assert_eq!(second.accepted, vec!["i1".to_string()]);
 
