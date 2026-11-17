@@ -12,8 +12,10 @@ use std::{
     sync::Arc,
 };
 
-use flit_api::DeviceType;
-use flit_core::{DiscoveryState, Engine, EngineConfig, Event, TransferId, collect_targets};
+use flit_api::{DeviceType, ItemKind};
+use flit_core::{
+    DiscoveryState, Engine, EngineConfig, Event, OfferId, OfferOutcome, TransferId, collect_targets,
+};
 use flit_crypto::{IdentityFile, NameFile};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -82,6 +84,51 @@ pub trait TransferListener: Send + Sync {
     fn on_event(&self, event: TransferEvent);
 }
 
+/// One item inside an incoming offer.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OfferItem {
+    /// Sender's opaque id; pass it back to accept this item alone.
+    pub id: String,
+    /// Name it would be saved under, relative to the receive folder.
+    pub name: String,
+    /// Payload bytes, counting inline text.
+    pub size: u64,
+    /// `file` or `text`.
+    pub kind: String,
+}
+
+/// A device asking to send something and waiting for an answer.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OfferEvent {
+    /// Which offer, for [`MobileEngine::answer_offer`].
+    pub id: u64,
+    /// Key proven by the sender's certificate. Empty when it presented none,
+    /// in which case `remember` cannot work: there is nothing to remember.
+    pub fingerprint: String,
+    /// Claimed device id, empty when none was announced.
+    pub device_id: String,
+    /// Claimed name, or a neutral sentence when the sender did not give one.
+    pub alias: String,
+    /// Bytes the whole offer covers.
+    pub bytes: u64,
+    /// Everything the sender wants to send.
+    pub items: Vec<OfferItem>,
+}
+
+/// What the app is told when an offer closes without an answer.
+///
+/// Called on a background thread, like [`TransferListener`].
+#[uniffi::export(callback_interface)]
+pub trait OfferListener: Send + Sync {
+    /// Someone is waiting: show the sheet and answer it, or it times out.
+    fn on_offer(&self, offer: OfferEvent);
+    /// The offer is settled: `accepted`, `declined` or `timed_out`.
+    ///
+    /// A sheet still on screen must close. An answer sent after this returns
+    /// false and changes nothing.
+    fn on_offer_closed(&self, id: u64, outcome: String);
+}
+
 /// This phone, as another device sees it.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceInfo {
@@ -129,8 +176,17 @@ impl MobileEngine {
     /// display name and the received folder live under it, so the phone needs
     /// no storage permission to receive. On first run the name is two random
     /// words; after that it is whatever the person chose.
+    ///
+    /// `auto_accept` and `trusted` are the consent policy the shell persisted.
+    /// They are installed before the receiver binds, so a device that sends the
+    /// moment this phone appears is answered instead of waiting for a sheet
+    /// that has not been drawn yet.
     #[uniffi::constructor]
-    pub fn start(data_dir: String) -> Result<Arc<Self>, MobileError> {
+    pub fn start(
+        data_dir: String,
+        auto_accept: bool,
+        trusted: Vec<String>,
+    ) -> Result<Arc<Self>, MobileError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -155,6 +211,8 @@ impl MobileEngine {
             alias: name,
             device_type: DeviceType::Phone,
             root: dir.join("received"),
+            auto_accept,
+            trusted,
             ..EngineConfig::default()
         };
         let engine = runtime
@@ -226,6 +284,85 @@ impl MobileEngine {
                 }
             }
         });
+    }
+
+    /// Listen for incoming offers until the engine stops.
+    ///
+    /// Separate from [`MobileEngine::watch`] because an offer is a question the
+    /// person must answer, not a progress tick: the app shows a sheet and calls
+    /// [`MobileEngine::answer_offer`]. Leaving it unanswered for a minute
+    /// declines the transfer and tells the sender.
+    pub fn watch_offers(&self, listener: Box<dyn OfferListener>) {
+        let mut events = self.engine.subscribe();
+        self.runtime.spawn(async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
+                };
+                match event {
+                    Event::IncomingOffer {
+                        id,
+                        sender,
+                        items,
+                        bytes,
+                    } => listener.on_offer(OfferEvent {
+                        id: id.as_u64(),
+                        fingerprint: sender.fingerprint.unwrap_or_default(),
+                        device_id: sender.device_id.unwrap_or_default(),
+                        alias: sender.alias,
+                        bytes,
+                        items: items
+                            .into_iter()
+                            .map(|item| OfferItem {
+                                id: item.id,
+                                name: item.name,
+                                size: item.size,
+                                kind: item_kind_name(item.kind).to_string(),
+                            })
+                            .collect(),
+                    }),
+                    Event::OfferClosed { id, outcome } => {
+                        listener.on_offer_closed(id.as_u64(), outcome_name(outcome).to_string());
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    /// Answer an offer announced by [`OfferListener::on_offer`].
+    ///
+    /// `accepted` carries the item ids that may be saved; pass every id for the
+    /// whole transfer, or nothing to decline. `remember` adds the sender's
+    /// fingerprint to the trusted list, which the app must persist; a sender
+    /// that presented no certificate cannot be remembered. Returns false when
+    /// the offer already closed, which the UI can ignore.
+    pub fn answer_offer(&self, id: u64, accepted: Vec<String>, remember: bool) -> bool {
+        self.runtime.block_on(
+            self.engine
+                .answer_offer(OfferId::from_raw(id), accepted, remember),
+        )
+    }
+
+    /// Replace the consent policy. The app persists both halves.
+    ///
+    /// `enabled` accepts every offer without asking; `trusted` lists the
+    /// fingerprints accepted on their own even when it is off. Called once at
+    /// startup with what was saved, and again whenever the person changes it.
+    pub fn set_auto_accept(&self, enabled: bool, trusted: Vec<String>) {
+        self.engine.set_auto_accept(enabled, trusted);
+    }
+
+    /// Whether every offer is accepted without asking.
+    pub fn auto_accept(&self) -> bool {
+        self.engine.auto_accept()
+    }
+
+    /// The fingerprints remembered as trusted senders, sorted.
+    pub fn trusted_devices(&self) -> Vec<String> {
+        self.engine.trusted_devices()
     }
 
     /// Send files to a device from the peer list, and return the send's id.
@@ -430,7 +567,11 @@ fn transfer_event(event: Event) -> Option<TransferEvent> {
             ..blank("failed", id)
         }),
         Event::TransferCancelled { id } => Some(blank("cancelled", id)),
-        Event::PeerSeen(_) | Event::PeerLost { .. } | Event::DiscoveryUnavailable { .. } => None,
+        Event::PeerSeen(_)
+        | Event::PeerLost { .. }
+        | Event::DiscoveryUnavailable { .. }
+        | Event::IncomingOffer { .. }
+        | Event::OfferClosed { .. } => None,
     }
 }
 
@@ -552,6 +693,21 @@ fn device_type_name(kind: DeviceType) -> &'static str {
         DeviceType::Phone => "phone",
         DeviceType::Tablet => "tablet",
         DeviceType::Headless => "headless",
+    }
+}
+
+fn item_kind_name(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::File => "file",
+        ItemKind::Text => "text",
+    }
+}
+
+fn outcome_name(outcome: OfferOutcome) -> &'static str {
+    match outcome {
+        OfferOutcome::Accepted => "accepted",
+        OfferOutcome::Declined => "declined",
+        OfferOutcome::TimedOut => "timed_out",
     }
 }
 

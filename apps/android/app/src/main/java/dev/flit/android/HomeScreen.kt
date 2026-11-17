@@ -2,6 +2,7 @@
 
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.StatFs
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -42,6 +43,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -50,6 +52,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -76,8 +79,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.flit.android.ffi.DeviceInfo
+import dev.flit.android.ffi.OfferEvent
 import dev.flit.android.ffi.PeerInfo
 import dev.flit.android.ffi.ReceivedFile
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -112,6 +117,9 @@ fun HomeScreen(
     onClearTarget: () -> Unit,
     onRemoveReceived: (ReceivedFile) -> Unit,
     onUndoRemove: () -> Unit,
+    onAnswerOffer: (List<String>, Boolean) -> Unit,
+    onSetAutoAccept: (Boolean) -> Unit,
+    onForgetTrusted: (String) -> Unit,
 ) {
     val colors = FlitPalette.colors
     val context = LocalContext.current
@@ -182,6 +190,8 @@ fun HomeScreen(
                     FlitTab.Settings -> SettingsTab(
                         state = state,
                         onRename = { renaming = true },
+                        onSetAutoAccept = onSetAutoAccept,
+                        onForgetTrusted = onForgetTrusted,
                     )
                 }
             }
@@ -227,6 +237,14 @@ fun HomeScreen(
                     fileActions = null
                     onRemoveReceived(file)
                 },
+            )
+        }
+
+        state.offer?.let { offer ->
+            OfferSheet(
+                offer = offer,
+                onAccept = { ids, remember -> onAnswerOffer(ids, remember) },
+                onDecline = { onAnswerOffer(emptyList(), false) },
             )
         }
     }
@@ -724,6 +742,8 @@ private fun TransferPanel(
         transfer.cancelled -> "Stopped. Nothing else was sent."
         transfer.finished ->
             "${transfer.filesDone} of ${transfer.files} files \u00b7 ${size(transfer.total)}"
+        transfer.total > 0L && transfer.sent == 0L ->
+            "Waiting for the other device to accept\u2026"
         transfer.total > 0L ->
             "${size(transfer.sent)} of ${size(transfer.total)} \u00b7 " +
                 "${transfer.filesDone} of ${transfer.files} files"
@@ -1005,7 +1025,12 @@ private fun SendSlab(
  * what a name is worth.
  */
 @Composable
-private fun SettingsTab(state: HomeState, onRename: () -> Unit) {
+private fun SettingsTab(
+    state: HomeState,
+    onRename: () -> Unit,
+    onSetAutoAccept: (Boolean) -> Unit,
+    onForgetTrusted: (String) -> Unit,
+) {
     val colors = FlitPalette.colors
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
@@ -1118,6 +1143,86 @@ private fun SettingsTab(state: HomeState, onRename: () -> Unit) {
                 color = colors.ink2,
                 modifier = Modifier.padding(start = 2.dp),
             )
+        }
+
+        item(key = "consent") {
+            SectionHeading(title = "Receiving", trailing = null)
+            Surface(color = colors.raised, shape = RoundedCornerShape(18.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Accept files without asking",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = "Every device on this Wi\u2011Fi can send without a " +
+                                    "tap. Off means a sheet asks first.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.ink3,
+                            )
+                        }
+                        Switch(
+                            checked = state.autoAccept,
+                            onCheckedChange = onSetAutoAccept,
+                        )
+                    }
+                }
+            }
+        }
+
+        item(key = "trusted") {
+            Spacer(Modifier.height(14.dp))
+            Text(
+                text = "Trusted devices",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(start = 2.dp),
+            )
+            Spacer(Modifier.height(2.dp))
+            if (state.trusted.isEmpty()) {
+                Text(
+                    text = "None yet. Accept a transfer and tick \u201cAlways accept\u201d " +
+                        "to add one.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink3,
+                    modifier = Modifier.padding(start = 2.dp, top = 2.dp),
+                )
+            } else {
+                state.trusted.forEach { fingerprint ->
+                    val alias = state.peers
+                        .firstOrNull { it.fingerprint.equals(fingerprint, ignoreCase = true) }
+                        ?.alias
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = alias ?: "Trusted device",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = shortFingerprint(fingerprint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.ink3,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
+                        TextButton(onClick = { onForgetTrusted(fingerprint) }) {
+                            Text("Forget")
+                        }
+                    }
+                }
+            }
         }
 
         item(key = "about") {
@@ -1363,6 +1468,144 @@ private fun AddressDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+/**
+ * The question consent exists for: who is asking, what would land, and how much
+ * room it needs. Accept sends the ids back to the engine; decline answers empty.
+ *
+ * The sender is already blocked waiting, so there is no Cancel — closing the
+ * sheet is a decline, which is the honest reading of "not now".
+ */
+@Composable
+private fun OfferSheet(
+    offer: OfferEvent,
+    onAccept: (List<String>, Boolean) -> Unit,
+    onDecline: () -> Unit,
+) {
+    val colors = FlitPalette.colors
+    val context = LocalContext.current
+    var remember by remember(offer.id) { mutableStateOf(false) }
+    val canTrust = offer.fingerprint.isNotEmpty()
+    val size = Formatter.formatShortFileSize(context, offer.bytes.toLong())
+    val shown = offer.items.take(4)
+    val extra = offer.items.size - shown.size
+    // The receiver writes under filesDir/received, so this is the number that
+    // decides whether the transfer can finish, not the phone's total storage.
+    val available = remember(offer.id) {
+        runCatching {
+            val dir = File(context.filesDir, "received")
+            StatFs(dir.path).availableBytes
+        }.getOrDefault(Long.MAX_VALUE)
+    }
+    val fits = offer.bytes.toLong() <= available
+
+    AlertDialog(
+        onDismissRequest = onDecline,
+        shape = RoundedCornerShape(24.dp),
+        containerColor = colors.card,
+        title = {
+            Text(
+                text = "${offer.alias} wants to send",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = (if (offer.items.size == 1) "1 item" else
+                        "${offer.items.size} items") + " \u00b7 " + size,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink3,
+                )
+                Spacer(Modifier.height(10.dp))
+                shown.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = (if (item.kind == "text") "Text" else
+                                    Formatter.formatShortFileSize(context, item.size.toLong())),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.ink3,
+                            )
+                        }
+                    }
+                }
+                if (extra > 0) {
+                    Text(
+                        text = "and $extra more",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.ink3,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                if (canTrust) {
+                    Text(
+                        text = "from " + shortFingerprint(offer.fingerprint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.ink3,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                } else {
+                    Text(
+                        text = "This sender did not prove an identity, so this phone " +
+                            "cannot remember it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.ink3,
+                    )
+                }
+                if (!fits) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Not enough space on this phone for $size.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (canTrust) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { remember = !remember }
+                            .padding(top = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = remember,
+                            onCheckedChange = null,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "Always accept from this device",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = fits && offer.items.isNotEmpty(),
+                onClick = { onAccept(offer.items.map { it.id }, remember) },
+            ) {
+                Text("Accept")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDecline) { Text("Decline") }
         },
     )
 }

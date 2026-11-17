@@ -41,6 +41,9 @@ class MainActivity : ComponentActivity() {
                     onClearTarget = home::clearTarget,
                     onRemoveReceived = home::removeReceived,
                     onUndoRemove = home::undoRemoveReceived,
+                    onAnswerOffer = home::answerOffer,
+                    onSetAutoAccept = home::setAutoAccept,
+                    onForgetTrusted = home::forgetTrusted,
                 )
             }
         }

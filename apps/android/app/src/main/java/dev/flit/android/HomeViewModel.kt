@@ -9,6 +9,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.flit.android.ffi.DeviceInfo
 import dev.flit.android.ffi.MobileEngine
+import dev.flit.android.ffi.OfferEvent
+import dev.flit.android.ffi.OfferListener
 import dev.flit.android.ffi.PeerInfo
 import dev.flit.android.ffi.ReceivedFile
 import dev.flit.android.ffi.TransferEvent
@@ -39,6 +41,12 @@ data class HomeState(
     val received: List<ReceivedFile> = emptyList(),
     /** A row removed for undo; the disk delete waits until the snackbar goes. */
     val removed: ReceivedFile? = null,
+    /** A transfer offered right now, waiting for an answer. */
+    val offer: OfferEvent? = null,
+    /** Accept every offer without asking. Persisted. */
+    val autoAccept: Boolean = false,
+    /** Fingerprints accepted on their own. Persisted. */
+    val trusted: List<String> = emptyList(),
     val error: String? = null,
     /** One sentence to show once, then clear. */
     val notice: String? = null,
@@ -106,20 +114,31 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             val app = getApplication<Application>()
+            // Read the saved policy before the engine binds: the receiver
+            // announces the moment it starts, and an offer must be answered by
+            // the policy already in hand, not by one pushed a second later.
+            val (autoAccept, trusted) = withContext(Dispatchers.IO) { loadPolicy() }
             val started = withContext(Dispatchers.IO) {
                 runCatching {
                     // Multicast is filtered by the Wi-Fi stack unless a lock is
                     // held: without it the phone announces itself but never
                     // hears anyone, which looks like a broken app.
                     multicast = acquireMulticast(app)
-                    MobileEngine.start(app.filesDir.absolutePath)
+                    MobileEngine.start(app.filesDir.absolutePath, autoAccept, trusted)
                 }
             }
 
             started.onSuccess { open ->
                 engine = open
-                _state.update { it.copy(error = null) }
+                _state.update {
+                    it.copy(
+                        error = null,
+                        autoAccept = autoAccept,
+                        trusted = trusted,
+                    )
+                }
                 listen(open)
+                listenOffers(open)
                 poll()
                 refreshReceived()
             }.onFailure { err ->
@@ -202,6 +221,31 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                         event.bytes.toLong(),
                     )
                     "finished", "failed", "cancelled" -> TransferService.finished(app)
+                }
+            }
+        })
+    }
+
+    /**
+     * Attach the offer listener: who is asking, and when the question closes.
+     *
+     * A second subscription, separate from [listen], because progress ticks and
+     * consent questions are different things: one is drawn, the other is
+     * answered. The engine closes an unanswered offer itself, so this listener
+     * only has to take the sheet down.
+     */
+    private fun listenOffers(open: MobileEngine) {
+        open.watchOffers(object : OfferListener {
+            override fun onOffer(offer: OfferEvent) {
+                _state.update { it.copy(offer = offer) }
+            }
+
+            override fun onOfferClosed(id: ULong, outcome: String) {
+                _state.update { current ->
+                    if (current.offer?.id == id) current.copy(offer = null) else current
+                }
+                if (outcome == "timed_out") {
+                    _state.update { it.copy(notice = "That offer timed out.") }
                 }
             }
         })
@@ -317,6 +361,100 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /** A finished row has been read; clear it. */
     fun dismissTransfer() {
         _state.update { it.copy(transfer = null) }
+    }
+
+    /**
+     * Answer the offer on screen.
+     *
+     * `accepted` is the list of item ids that may be saved; empty declines the
+     * whole transfer. `remember` trusts the sender's fingerprint, which only
+     * works when it presented a certificate: a name is never remembered.
+     */
+    fun answerOffer(accepted: List<String>, remember: Boolean) {
+        val open = engine ?: return
+        val offer = _state.value.offer ?: return
+        val fingerprint = offer.fingerprint
+        val trusting = remember && accepted.isNotEmpty() && fingerprint.isNotEmpty()
+        // Take the sheet down now: the sender should not wait for a round trip
+        // to the engine while the person is still looking at a dead question.
+        _state.update { current ->
+            if (current.offer?.id == offer.id) current.copy(offer = null) else current
+        }
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val answered = open.answerOffer(offer.id, accepted, trusting)
+                    val trusted = if (answered && trusting) {
+                        open.trustedDevices().also { savePolicy(_state.value.autoAccept, it) }
+                    } else {
+                        null
+                    }
+                    answered to trusted
+                }
+            }
+
+            result.onSuccess { (answered, trusted) ->
+                when {
+                    !answered -> _state.update {
+                        it.copy(notice = "That offer already closed.")
+                    }
+                    trusted != null -> _state.update { it.copy(trusted = trusted) }
+                }
+            }.onFailure { err ->
+                _state.update { it.copy(notice = describe(err)) }
+            }
+        }
+    }
+
+    /** Accept every offer without asking, or stop doing that. Persisted. */
+    fun setAutoAccept(enabled: Boolean) {
+        val open = engine
+        val trusted = _state.value.trusted
+        _state.update { it.copy(autoAccept = enabled) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    open?.setAutoAccept(enabled, trusted)
+                    savePolicy(enabled, trusted)
+                }
+            }
+        }
+    }
+
+    /** Stop accepting a device on its own. The next transfer asks again. */
+    fun forgetTrusted(fingerprint: String) {
+        val open = engine
+        val autoAccept = _state.value.autoAccept
+        val trusted = _state.value.trusted.filterNot { it == fingerprint }
+        _state.update { it.copy(trusted = trusted) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    open?.setAutoAccept(autoAccept, trusted)
+                    savePolicy(autoAccept, trusted)
+                }
+            }
+        }
+    }
+
+    /** The policy saved on this phone. */
+    private fun loadPolicy(): Pair<Boolean, List<String>> {
+        val store = getApplication<Application>()
+            .getSharedPreferences(CONSENT_PREFS, Context.MODE_PRIVATE)
+        val enabled = store.getBoolean(KEY_AUTO_ACCEPT, false)
+        val trusted = store.getStringSet(KEY_TRUSTED, emptySet()).orEmpty().sorted()
+        return enabled to trusted
+    }
+
+    /** Keep the policy across a restart; the engine holds only the live copy. */
+    private fun savePolicy(enabled: Boolean, trusted: List<String>) {
+        getApplication<Application>()
+            .getSharedPreferences(CONSENT_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_AUTO_ACCEPT, enabled)
+            .putStringSet(KEY_TRUSTED, trusted.toSet())
+            .apply()
     }
 
     /** What has landed in the receive folder, newest first. */
@@ -494,5 +632,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
         /** How long the undo offer stays on screen before the delete commits. */
         const val UNDO_MS = 5_000L
+
+        /** Where the consent policy is kept between runs. */
+        const val CONSENT_PREFS = "consent"
+        const val KEY_AUTO_ACCEPT = "auto_accept"
+        const val KEY_TRUSTED = "trusted"
     }
 }
