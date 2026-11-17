@@ -1,14 +1,26 @@
 ﻿package dev.flit.android
 
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -16,20 +28,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -40,14 +51,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,14 +72,25 @@ import androidx.compose.ui.unit.sp
 import dev.flit.android.ffi.DeviceInfo
 import dev.flit.android.ffi.PeerInfo
 import dev.flit.android.ffi.ReceivedFile
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+/** The three things this app does, as the reference learned and as people expect. */
+private enum class FlitTab(val label: String) {
+    Receive("Receive"),
+    Send("Send"),
+    Settings("Settings"),
+}
 
 /**
- * The whole app, one screen.
+ * The whole app, one activity, three tabs.
  *
- * The top card is this phone, because that is the thing a person needs to
- * compare with the other screen. Below it is whoever answered on this network;
- * tapping one picks the destination and the bar at the bottom offers the file
- * picker. A send has one row above the list: a bar, a count, and a way out.
+ * Receive is the identity surface: this phone, its name, its proof, and what
+ * has landed. Send is the working surface: devices one tap away from the file
+ * picker. Settings is where the label and the address live. Nothing here
+ * requires a settings visit to work.
  */
 @Composable
 fun HomeScreen(
@@ -70,7 +98,7 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onRename: (String) -> Unit,
     onNoticeShown: () -> Unit,
-    onSelect: (String) -> Unit,
+    onChoose: (String) -> Unit,
     onSend: (List<Uri>) -> Unit,
     onCancelSend: () -> Unit,
     onDismissTransfer: () -> Unit,
@@ -79,6 +107,7 @@ fun HomeScreen(
 ) {
     val colors = FlitPalette.colors
     val context = LocalContext.current
+    var tab by rememberSaveable { mutableStateOf(FlitTab.Receive.name) }
     var renaming by remember { mutableStateOf(false) }
     var addressing by remember { mutableStateOf(false) }
 
@@ -94,152 +123,524 @@ fun HomeScreen(
         onNoticeShown()
     }
 
-    if (renaming) {
-        RenameDialog(
-            current = state.device?.alias.orEmpty(),
-            onDismiss = { renaming = false },
-            onSave = { name ->
-                renaming = false
-                onRename(name)
-            },
-        )
-    }
+    val active = FlitTab.valueOf(tab)
 
-    if (addressing) {
-        AddressDialog(
-            onDismiss = { addressing = false },
-            onUse = { addr, fingerprint ->
-                addressing = false
-                onUseAddress(addr, fingerprint)
-            },
-        )
-    }
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopBar(
+                refreshing = state.refreshing && active == FlitTab.Send,
+                showRefresh = active == FlitTab.Send,
+                onRefresh = onRefresh,
+            )
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .windowInsetsPadding(WindowInsets.safeDrawing),
-    ) {
-        Header(refreshing = state.refreshing, onRefresh = onRefresh)
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(
-                start = 20.dp,
-                end = 20.dp,
-                bottom = 16.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            val transfer = state.transfer
-            if (transfer != null) {
-                item { TransferCard(transfer, onCancel = onCancelSend, onDismiss = onDismissTransfer) }
-            }
-
-            item {
-                val error = state.error
-                val device = state.device
-                when {
-                    error != null -> Notice(text = error)
-                    device == null -> Starting()
-                    else -> Identity(device, onChangeName = { renaming = true })
+            Column(modifier = Modifier.weight(1f)) {
+                when (active) {
+                    FlitTab.Receive -> ReceiveTab(state)
+                    FlitTab.Send -> SendTab(
+                        state = state,
+                        onChoose = onChoose,
+                        onPick = { picker.launch(arrayOf("*/*")) },
+                        onCancelSend = onCancelSend,
+                        onDismissTransfer = onDismissTransfer,
+                        onAddress = { addressing = true },
+                        onClearTarget = onClearTarget,
+                    )
+                    FlitTab.Settings -> SettingsTab(
+                        state = state,
+                        onRename = { renaming = true },
+                    )
                 }
             }
 
-            if (state.device != null) {
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    NearbyHeader(
-                        count = state.peers.size,
-                        onUseAddress = { addressing = true },
+            BottomBar(active = active, onSelect = { tab = it.name })
+        }
+
+        if (renaming) {
+            RenameDialog(
+                current = state.device?.alias.orEmpty(),
+                onDismiss = { renaming = false },
+                onSave = { name ->
+                    renaming = false
+                    onRename(name)
+                },
+            )
+        }
+
+        if (addressing) {
+            AddressDialog(
+                onDismiss = { addressing = false },
+                onUse = { addr, fingerprint ->
+                    addressing = false
+                    onUseAddress(addr, fingerprint)
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Wordmark, and the look-again control where it is meaningful. The identity
+ * chip is gone: this phone lives on Receive and in Settings now.
+ */
+@Composable
+private fun TopBar(
+    refreshing: Boolean,
+    showRefresh: Boolean,
+    onRefresh: () -> Unit,
+) {
+    val colors = FlitPalette.colors
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(60.dp)
+            .padding(start = 20.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Flit",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.weight(1f))
+
+        if (showRefresh) {
+            IconTap(
+                label = if (refreshing) "Looking for devices" else "Look again",
+                onClick = onRefresh,
+                enabled = !refreshing,
+            ) {
+                if (refreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(15.dp),
+                        strokeWidth = 1.8.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    RefreshGlyph(tint = colors.ink2)
+                }
+            }
+        }
+    }
+}
+
+/** A 48 dp tap target around a 24 dp glyph: the icon is small, the target is not. */
+@Composable
+private fun IconTap(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clickable(enabled = enabled, onClickLabel = label, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+    }
+}
+
+// ---------------------------------------------------------------- Receive --
+
+/**
+ * This phone, first: who it is and what it has received. The avatar is the
+ * ink circle with the name's initials — the one place the app draws itself
+ * as a thing, because this is the screen other devices send to.
+ */
+@Composable
+private fun ReceiveTab(state: HomeState) {
+    val colors = FlitPalette.colors
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),
+    ) {
+        item(key = "hero") {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Avatar(alias = state.device?.alias)
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    text = state.device?.alias ?: "Starting\u2026",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "phone \u00b7 " + shortFingerprint(state.device?.fingerprint.orEmpty()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink2,
+                )
+            }
+        }
+
+        item(key = "note") {
+            Text(
+                text = "Anyone on this Wi\u2011Fi can see this phone. Nothing leaves " +
+                    "the network.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.ink3,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, start = 24.dp, end = 24.dp),
+            )
+        }
+
+        item(key = "received") {
+            SectionHeading(
+                title = "Received",
+                trailing = when {
+                    state.received.isEmpty() -> null
+                    state.received.size == 1 -> "1 file"
+                    else -> "${state.received.size} files"
+                },
+            )
+        }
+
+        if (state.received.isEmpty()) {
+            item(key = "empty-received") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp, bottom = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = "Nothing yet",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Files sent to ${state.device?.alias ?: "this phone"} " +
+                            "land here and stay on the phone.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.ink2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                    )
+                }
+            }
+        } else {
+            ledgerRows(state.received).forEach { row ->
+                when (row) {
+                    is LedgerRow.Day -> item(key = "day${row.label}") {
+                        DayDivider(row.label)
+                    }
+                    is LedgerRow.File -> item(
+                        key = "file${row.file.name}${row.file.modified}",
+                    ) {
+                        ReceivedRow(row.file)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private sealed interface LedgerRow {
+    data class Day(val label: String) : LedgerRow
+    data class File(val file: ReceivedFile) : LedgerRow
+}
+
+/** Received files, grouped under the day they landed, newest day first. */
+private fun ledgerRows(files: List<ReceivedFile>): List<LedgerRow> {
+    val zone = ZoneId.systemDefault()
+    val today = LocalDate.now(zone)
+    val rows = mutableListOf<LedgerRow>()
+    var lastDay: LocalDate? = null
+    for (file in files.sortedByDescending { it.modified }) {
+        val day = Instant.ofEpochSecond(file.modified.toLong()).atZone(zone).toLocalDate()
+        if (day != lastDay) {
+            rows += LedgerRow.Day(
+                when (day) {
+                    today -> "Today"
+                    today.minusDays(1) -> "Yesterday"
+                    else -> day.format(DateTimeFormatter.ofPattern("d MMM"))
+                },
+            )
+            lastDay = day
+        }
+        rows += LedgerRow.File(file)
+    }
+    return rows
+}
+
+/** The ink circle with the name's initials. */
+@Composable
+private fun Avatar(alias: String?) {
+    val ink = MaterialTheme.colorScheme.onBackground
+    val paper = MaterialTheme.colorScheme.background
+    val initials = alias.orEmpty()
+        .split(Regex("\\s+"))
+        .filter { it.isNotEmpty() }
+        .take(2)
+        .joinToString("") { it.first().uppercase() }
+        .ifEmpty { "?" }
+
+    Box(
+        modifier = Modifier
+            .size(96.dp)
+            .background(ink, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = initials,
+            style = MaterialTheme.typography.displaySmall,
+            color = paper,
+        )
+    }
+}
+
+// ------------------------------------------------------------------- Send --
+
+/**
+ * Devices are the content: a list of names, each row one tap away from the
+ * file picker. A chosen device is an ink band — the only dark surface on the
+ * paper, so the eye lands on it first and the check confirms it.
+ */
+@Composable
+private fun SendTab(
+    state: HomeState,
+    onChoose: (String) -> Unit,
+    onPick: () -> Unit,
+    onCancelSend: () -> Unit,
+    onDismissTransfer: () -> Unit,
+    onAddress: () -> Unit,
+    onClearTarget: () -> Unit,
+) {
+    val colors = FlitPalette.colors
+
+    val chosen = state.peers.firstOrNull { it.deviceId == state.selected }
+    val target = chosen?.alias ?: state.manual?.addr
+    // The slab is for choosing files. While a send is in flight the transfer
+    // panel replaces it, so only one thing asks for attention at a time.
+    val slabVisible = target != null && state.transfer == null
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 16.dp),
+        ) {
+            val transfer = state.transfer
+            if (transfer != null) {
+                item(key = "transfer") {
+                    TransferPanel(
+                        transfer = transfer,
+                        onCancel = onCancelSend,
+                        onDismiss = onDismissTransfer,
+                    )
+                }
+            }
+
+            if (state.error != null) {
+                item(key = "error") {
+                    ErrorPanel(message = state.error, onRetry = onPick)
+                }
+            }
+
+            if (state.device == null) {
+                if (state.error == null) {
+                    item(key = "starting") { StartingRow() }
+                }
+            } else {
+                item(key = "nearby") {
+                    SectionHeading(
+                        title = "Nearby",
+                        trailing = when {
+                            state.refreshing && state.peers.isEmpty() -> "looking"
+                            state.peers.isEmpty() -> "nothing yet"
+                            state.peers.size == 1 -> "1 device"
+                            else -> "${state.peers.size} devices"
+                        },
                     )
                 }
 
                 if (state.peers.isEmpty()) {
-                    item { Empty(onNetwork = state.device.discovery == "running") }
+                    item(key = "empty") {
+                        Empty(discovering = state.device.discovery == "running")
+                    }
                 } else {
                     items(state.peers, key = { it.deviceId }) { peer ->
-                        Peer(
+                        PeerRow(
                             peer = peer,
                             selected = peer.deviceId == state.selected,
-                            onClick = { onSelect(peer.deviceId) },
+                            onClick = {
+                                onChoose(peer.deviceId)
+                                onPick()
+                            },
                         )
                     }
                 }
 
-                if (state.received.isNotEmpty()) {
-                    item {
-                        Spacer(Modifier.height(8.dp))
-                        ReceivedHeader(count = state.received.size)
-                    }
-                    items(state.received, key = { it.name + it.modified }) { file ->
-                        ReceivedRow(file)
-                    }
-                }
-
-                item {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "Anyone on this Wi\u2011Fi can see this phone. Nothing leaves the network.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.ink2,
-                        modifier = Modifier.padding(horizontal = 4.dp),
+                item(key = "address") {
+                    QuietAction(
+                        label = "Send to an address",
+                        onClick = onAddress,
                     )
                 }
             }
         }
 
-        val chosen = state.peers.firstOrNull { it.deviceId == state.selected }
-        val manual = state.manual
-        if (chosen != null || manual != null) {
-            SendBar(
-                deviceName = chosen?.alias ?: manual?.addr.orEmpty(),
+        AnimatedVisibility(
+            visible = slabVisible,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            SendSlab(
+                target = target.orEmpty(),
                 typed = chosen == null,
                 enabled = state.device != null,
-                onPick = { picker.launch(arrayOf("*/*")) },
+                onPick = onPick,
                 onClear = onClearTarget,
             )
         }
     }
 }
 
+/** A section's name in the display face, its count quiet at the right. */
 @Composable
-private fun Header(refreshing: Boolean, onRefresh: () -> Unit) {
+private fun SectionHeading(title: String, trailing: String?) {
+    val colors = FlitPalette.colors
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 20.dp, end = 12.dp, top = 20.dp, bottom = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(top = 18.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.Bottom,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Flit", style = MaterialTheme.typography.displaySmall)
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.weight(1f))
+        if (trailing != null) {
             Text(
-                text = "Files that stay on your network.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = FlitPalette.colors.ink2,
+                text = trailing,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.ink3,
+                modifier = Modifier.padding(bottom = 4.dp),
             )
         }
+    }
+}
 
-        TextButton(onClick = onRefresh, enabled = !refreshing) {
-            if (refreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary,
+@Composable
+private fun PeerRow(peer: PeerInfo, selected: Boolean, onClick: () -> Unit) {
+    val colors = FlitPalette.colors
+    val ink = MaterialTheme.colorScheme.onBackground
+    val band by animateColorAsState(
+        targetValue = if (selected) ink else Color.Transparent,
+        animationSpec = tween(180),
+        label = "peer-band",
+    )
+    val titleColor by animateColorAsState(
+        targetValue = if (selected) colors.paper else MaterialTheme.colorScheme.onBackground,
+        animationSpec = tween(180),
+        label = "peer-title",
+    )
+    val metaColor by animateColorAsState(
+        targetValue = if (selected) colors.paper.copy(alpha = 0.62f) else colors.ink3,
+        animationSpec = tween(180),
+        label = "peer-meta",
+    )
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp)
+            .clickable(onClickLabel = "Send files to ${peer.alias}", onClick = onClick),
+        color = band,
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DeviceGlyph(
+                kind = peer.deviceType,
+                tint = if (selected) colors.paper else colors.ink2,
+            )
+            Spacer(Modifier.width(16.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = peer.alias,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = titleColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.width(8.dp))
-                Text("Looking")
-            } else {
-                Text("Refresh")
+                Spacer(Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = peer.deviceType,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = metaColor,
+                    )
+                    Dot(color = metaColor)
+                    Text(
+                        text = shortFingerprint(peer.fingerprint),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.5.sp,
+                        letterSpacing = 0.3.sp,
+                        color = metaColor,
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = selected,
+                enter = scaleIn(tween(160)) + fadeIn(tween(160)),
+                exit = fadeOut(tween(120)),
+            ) {
+                Box(modifier = Modifier.padding(start = 10.dp)) {
+                    CheckBadge()
+                }
             }
         }
     }
 }
 
-/** The send in flight, or the one that just ended. */
+/** A tick drawn rather than bundled: one icon is not worth an icon artifact. */
 @Composable
-private fun TransferCard(
+private fun CheckBadge() {
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .background(MaterialTheme.colorScheme.primary, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(13.dp)) {
+            val stroke = 1.9.dp.toPx()
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.08f, size.height * 0.55f),
+                end = Offset(size.width * 0.38f, size.height * 0.84f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.38f, size.height * 0.84f),
+                end = Offset(size.width * 0.94f, size.height * 0.2f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+        }
+    }
+}
+
+/**
+ * The send in flight, or the one that just ended, in the same ink slab the
+ * send bar uses — the bar does not disappear, it becomes the transfer.
+ */
+@Composable
+private fun TransferPanel(
     transfer: TransferUi,
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
@@ -247,125 +648,489 @@ private fun TransferCard(
     val colors = FlitPalette.colors
     val context = LocalContext.current
     val size = { bytes: Long -> Formatter.formatShortFileSize(context, bytes) }
+    val slab = MaterialTheme.colorScheme.onBackground
+    val paperText = colors.paper
+    // On the ink slab the theme's light-mode error is too dark to read, so the
+    // danger colour the dark theme uses — light enough for ink — is the one
+    // the slab borrows.
+    val slabDanger = Color(0xFFFF8A80)
 
     val headline = when {
-        transfer.problem != null && transfer.finished -> "${transfer.filesDone} of ${transfer.files} saved"
-        transfer.problem != null -> "Send failed"
+        transfer.problem != null && transfer.finished -> "Partly sent"
+        transfer.problem != null -> "Failed"
         transfer.cancelled -> "Cancelled"
         transfer.finished -> "Sent"
-        else -> transfer.label.ifEmpty { "Sending" }
+        else -> "Sending"
     }
 
     val detail = when {
-        transfer.problem != null -> transfer.problem
-        transfer.cancelled -> "Nothing else will be sent."
-        transfer.finished -> "${transfer.filesDone} of ${transfer.files} files \u00b7 ${size(transfer.total)}"
+        transfer.problem != null && transfer.finished ->
+            "${transfer.filesDone} of ${transfer.files} files made it to the other side."
+        transfer.problem != null -> transfer.problem.orEmpty()
+        transfer.cancelled -> "Stopped. Nothing else was sent."
+        transfer.finished ->
+            "${transfer.filesDone} of ${transfer.files} files \u00b7 ${size(transfer.total)}"
         transfer.total > 0L ->
-            "${size(transfer.sent)} of ${size(transfer.total)} \u00b7 ${transfer.filesDone} of ${transfer.files}"
-        else -> "Preparing\u2026"
+            "${size(transfer.sent)} of ${size(transfer.total)} \u00b7 " +
+                "${transfer.filesDone} of ${transfer.files} files"
+        else -> "Getting ready\u2026"
     }
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = colors.card,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, colors.line),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 18.dp, bottom = 4.dp),
+        color = slab,
+        shape = RoundedCornerShape(24.dp),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = headline,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = if (transfer.done) onDismiss else onCancel) {
-                    Text(if (transfer.done) "Done" else "Cancel")
-                }
-            }
-
-            if (!transfer.done) {
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { transfer.fraction },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            Spacer(Modifier.height(8.dp))
+        Column(modifier = Modifier.padding(start = 22.dp, end = 10.dp, top = 18.dp, bottom = 12.dp)) {
+            Text(
+                text = headline,
+                style = MaterialTheme.typography.headlineSmall,
+                color = paperText,
+            )
+            Spacer(Modifier.height(4.dp))
             Text(
                 text = detail,
                 style = MaterialTheme.typography.bodySmall,
-                color = colors.ink2,
+                color = if (transfer.problem != null && !transfer.finished) {
+                    slabDanger
+                } else {
+                    paperText.copy(alpha = 0.66f)
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            if (!transfer.done) {
+                Spacer(Modifier.height(16.dp))
+                ProgressTrack(
+                    fraction = transfer.fraction,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = 12.dp),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = if (transfer.done) onDismiss else onCancel) {
+                    Text(
+                        text = if (transfer.done) "Done" else "Cancel",
+                        color = paperText,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** A 6 dp track whose fill eases toward the last reported fraction. */
+@Composable
+private fun ProgressTrack(fraction: Float, modifier: Modifier = Modifier) {
+    val colors = FlitPalette.colors
+    val shown by animateFloatAsState(
+        targetValue = fraction.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 400, easing = LinearEasing),
+        label = "send-progress",
+    )
+    val fill = colors.paper
+
+    Box(
+        modifier = modifier
+            .height(6.dp)
+            .background(fill.copy(alpha = 0.16f), CircleShape),
+    ) {
+        if (shown > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(shown)
+                    .height(6.dp)
+                    .background(fill, CircleShape),
             )
         }
+    }
+}
+
+/**
+ * Nobody here yet: two machines and a dotted path between them, the near one
+ * in the accent because this phone is the near one.
+ */
+@Composable
+private fun Empty(discovering: Boolean) {
+    val colors = FlitPalette.colors
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 28.dp, bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        EmptyGlyph(
+            near = MaterialTheme.colorScheme.primary,
+            far = colors.ink3,
+        )
+        Spacer(Modifier.height(18.dp))
+        Text(
+            text = "No one here yet",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = if (discovering) {
+                "Open Flit on a computer on this Wi\u2011Fi. It announces itself; " +
+                    "there is nothing to type."
+            } else {
+                "This phone is not hearing announcements, so nothing will appear " +
+                    "on its own. Use an address instead."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.ink2,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
+    }
+}
+
+/** A quiet footer action: text, 48 dp tall, no fill, no outline. */
+@Composable
+private fun QuietAction(label: String, onClick: () -> Unit) {
+    val colors = FlitPalette.colors
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .heightIn(min = 48.dp)
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "+  $label",
+            style = MaterialTheme.typography.labelMedium,
+            color = colors.ink2,
+        )
+    }
+}
+
+/** One received file: its extension in mono, its name, its size and its day. */
+@Composable
+private fun ReceivedRow(file: ReceivedFile) {
+    val colors = FlitPalette.colors
+    val context = LocalContext.current
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (file.folder) {
+                "DIR"
+            } else {
+                file.name.substringAfterLast('.', "").uppercase().ifEmpty { "FILE" }
+            },
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.5.sp,
+            letterSpacing = 0.6.sp,
+            color = colors.ink3,
+            modifier = Modifier.width(52.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = file.name,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = Formatter.formatShortFileSize(context, file.bytes.toLong()) +
+                " \u00b7 " + whenChanged(file.modified.toLong()),
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.ink3,
+        )
     }
 }
 
 @Composable
-private fun Identity(device: DeviceInfo, onChangeName: () -> Unit) {
+private fun DayDivider(label: String) {
+    val colors = FlitPalette.colors
+
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = colors.ink3,
+        modifier = Modifier.padding(top = 14.dp, bottom = 4.dp, start = 2.dp),
+    )
+}
+
+/**
+ * The ink slab that appears once a destination is chosen: it names the target
+ * in the display face and offers the one action there is.
+ */
+@Composable
+private fun SendSlab(
+    target: String,
+    typed: Boolean,
+    enabled: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val colors = FlitPalette.colors
+    val slab = MaterialTheme.colorScheme.onBackground
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+        color = slab,
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 22.dp, end = 8.dp, top = 12.dp, bottom = 12.dp)
+                .heightIn(min = 64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (typed) "To address" else "Sending to",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.paper.copy(alpha = 0.55f),
+                )
+                Text(
+                    text = target,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colors.paper,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Button(
+                onClick = onPick,
+                enabled = enabled,
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            ) {
+                Text("Choose files", style = MaterialTheme.typography.labelMedium)
+            }
+            IconTap(label = "Choose another device", onClick = onClear) {
+                CloseGlyph(tint = colors.paper.copy(alpha = 0.6f))
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------- Settings --
+
+/**
+ * The label, the proof, the address, and what the receiver is doing. All of
+ * it readable, one tap to change the name — and the honest sentence about
+ * what a name is worth.
+ */
+@Composable
+private fun SettingsTab(state: HomeState, onRename: () -> Unit) {
     val colors = FlitPalette.colors
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val device = state.device
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = colors.accentSoft,
-        shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.dp, colors.accentLine),
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "THIS PHONE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onChangeName) {
-                    Text("Change")
+        item(key = "identity") {
+            SectionHeading(title = "Identity", trailing = null)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp)
+                    .clickable(onClickLabel = "Change this phone's name", onClick = onRename),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Name",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.ink3,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = device?.alias ?: "Starting\u2026",
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Chevron(tint = colors.ink3, direction = ChevronDirection.Right)
+            }
+        }
+
+        item(key = "fingerprint") {
+            Spacer(Modifier.height(8.dp))
+            Surface(color = colors.raised, shape = RoundedCornerShape(18.dp)) {
+                Column(modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)) {
+                    Text(
+                        text = "Fingerprint",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.ink3,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = groupedFingerprint(device?.fingerprint.orEmpty()),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.5.sp,
+                        lineHeight = 18.sp,
+                        letterSpacing = 0.2.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Other devices pin this, not the name.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.ink3,
+                    )
                 }
             }
-            Text(
-                text = device.alias,
-                fontSize = 19.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.2.sp,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = shortFingerprint(device.fingerprint),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.5.sp,
-                color = colors.ink2,
-            )
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = colors.accentLine.copy(alpha = 0.7f))
+        }
+
+        item(key = "address") {
             Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = device.addr,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.5.sp,
-                    color = colors.ink2,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(device.addr))
-                        Toast.makeText(context, "Address copied", Toast.LENGTH_SHORT).show()
-                    },
+            Surface(color = colors.raised, shape = RoundedCornerShape(18.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Copy")
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Address",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.ink3,
+                        )
+                        Text(
+                            text = device?.addr.orEmpty(),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(device?.addr.orEmpty()))
+                            Toast.makeText(context, "Address copied", Toast.LENGTH_SHORT).show()
+                        },
+                    ) {
+                        Text("Copy")
+                    }
+                }
+            }
+        }
+
+        item(key = "receiver") {
+            SectionHeading(title = "Receiver", trailing = null)
+            val status = when (device?.discovery) {
+                "running" -> "Looking for devices on this Wi\u2011Fi"
+                "unavailable" -> "Discovery unavailable; use addresses"
+                null -> "Starting\u2026"
+                else -> "Not looking for devices"
+            }
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.ink2,
+                modifier = Modifier.padding(start = 2.dp),
+            )
+        }
+
+        item(key = "about") {
+            SectionHeading(title = "About", trailing = null)
+            val version = remember {
+                runCatching {
+                    context.packageManager
+                        .getPackageInfo(context.packageName, 0)
+                        .versionName
+                }.getOrNull()
+            }
+            Text(
+                text = "Flit $version \u00b7 pre-alpha. Files stay on the devices; " +
+                    "the transfer is plain HTTP on this network.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.ink3,
+                modifier = Modifier.padding(start = 2.dp),
+            )
+        }
+    }
+}
+
+// ------------------------------------------------------------- bottom bar --
+
+@Composable
+private fun BottomBar(active: FlitTab, onSelect: (FlitTab) -> Unit) {
+    val colors = FlitPalette.colors
+    val line = MaterialTheme.colorScheme.outline
+
+    Column {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(line),
+        )
+        Row(modifier = Modifier.height(68.dp)) {
+            FlitTab.entries.forEach { item ->
+                val selected = item == active
+                val tint by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.onBackground
+                    } else {
+                        colors.ink3
+                    },
+                    animationSpec = tween(160),
+                    label = "tab-${item.name}",
+                )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                        .clickable(
+                            onClickLabel = item.label,
+                            onClick = { onSelect(item) },
+                        ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    when (item) {
+                        FlitTab.Receive -> RadarGlyph(tint = tint)
+                        FlitTab.Send -> SendGlyph(tint = tint)
+                        FlitTab.Settings -> SlidersGlyph(tint = tint)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = item.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = tint,
+                    )
                 }
             }
         }
     }
 }
 
-/** The first 16 hex characters, as a person would read them off two screens. */
-internal fun shortFingerprint(fingerprint: String): String =
-    fingerprint.take(16).chunked(4).joinToString(" ")
+// -------------------------------------------------------------- dialogs --
 
 /** Editing the name is a label change, not an identity change: say so once. */
 @Composable
@@ -379,6 +1144,8 @@ private fun RenameDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        containerColor = FlitPalette.colors.card,
         title = { Text("Name this phone") },
         text = {
             Column {
@@ -415,33 +1182,6 @@ private fun RenameDialog(
 /** Longest name the engine will announce. */
 private const val MAX_NAME_CHARS = 32
 
-@Composable
-private fun NearbyHeader(count: Int, onUseAddress: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "NEARBY",
-            style = MaterialTheme.typography.labelSmall,
-            color = FlitPalette.colors.ink2,
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = when (count) {
-                0 -> "nothing yet"
-                1 -> "1 device"
-                else -> "$count devices"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = FlitPalette.colors.ink2,
-        )
-        TextButton(
-            onClick = onUseAddress,
-            contentPadding = PaddingValues(horizontal = 10.dp),
-        ) {
-            Text("Use address", style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
 /** The way to reach a device whose announcement never arrived. */
 @Composable
 private fun AddressDialog(
@@ -455,6 +1195,8 @@ private fun AddressDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        containerColor = FlitPalette.colors.card,
         title = { Text("Send to an address") },
         text = {
             Column {
@@ -499,226 +1241,340 @@ private fun AddressDialog(
     )
 }
 
+// ------------------------------------------------------------ small parts --
+
 @Composable
-private fun Peer(peer: PeerInfo, selected: Boolean, onClick: () -> Unit) {
+private fun ErrorPanel(message: String, onRetry: () -> Unit) {
     val colors = FlitPalette.colors
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        color = if (selected) colors.accentSoft else colors.card,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(
-            1.dp,
-            if (selected) colors.accentLine else colors.line,
-        ),
+            .padding(top = 18.dp),
+        color = colors.dangerSoft,
+        shape = RoundedCornerShape(18.dp),
     ) {
-        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = peer.alias,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = peer.deviceType,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.ink2,
-                    )
-                }
-                Text(
-                    text = "${shortFingerprint(peer.fingerprint)} \u00b7 ${peer.addr}",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.5.sp,
-                    color = colors.ink2,
-                )
-            }
-
-            if (selected) {
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = "Chosen",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ReceivedHeader(count: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "RECEIVED",
-            style = MaterialTheme.typography.labelSmall,
-            color = FlitPalette.colors.ink2,
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = if (count == 1) "1 file" else "$count files",
-            style = MaterialTheme.typography.bodySmall,
-            color = FlitPalette.colors.ink2,
-        )
-    }
-}
-
-@Composable
-private fun ReceivedRow(file: ReceivedFile) {
-    val colors = FlitPalette.colors
-    val context = LocalContext.current
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = colors.card,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, colors.line),
-    ) {
-        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = file.name,
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Text(
-                    text = buildString {
-                        append(Formatter.formatShortFileSize(context, file.bytes.toLong()))
-                        if (file.folder) append(" \u00b7 folder")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.ink2,
-                )
-            }
-        }
-    }
-}
-
-/** Bottom bar: the destination is chosen, so offer the picker. */
-@Composable
-private fun SendBar(
-    deviceName: String,
-    typed: Boolean,
-    enabled: Boolean,
-    onPick: () -> Unit,
-    onClear: () -> Unit,
-) {
-    val colors = FlitPalette.colors
-
-    Surface(color = colors.card, border = BorderStroke(1.dp, colors.line)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (typed) "TO ADDRESS" else "TO",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.ink2,
-                )
-                Text(
-                    text = deviceName,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            TextButton(onClick = onClear) {
-                Text("Change")
-            }
-            Button(onClick = onPick, enabled = enabled) {
-                Text("Choose files")
-            }
-        }
-    }
-}
-
-@Composable
-private fun Empty(onNetwork: Boolean) {
-    val colors = FlitPalette.colors
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = colors.card,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, colors.line),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 26.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = "No one yet",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = if (onNetwork) {
-                    "Open Flit on a computer on this Wi\u2011Fi. It announces itself; there is nothing to type."
-                } else {
-                    "This phone is not hearing announcements, so nothing will appear on its own."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.ink2,
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-}
-
-@Composable
-private fun Starting() {
-    val colors = FlitPalette.colors
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = colors.card,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, colors.line),
-    ) {
-        Row(
-            modifier = Modifier.padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(16.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = "Opening the receiver\u2026",
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.ink2,
-            )
-        }
-    }
-}
-
-@Composable
-private fun Notice(text: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.errorContainer,
-        shape = RoundedCornerShape(14.dp),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 8.dp)) {
             Text(
                 text = "The receiver did not start",
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
+                color = MaterialTheme.colorScheme.error,
             )
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink2,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onRetry) { Text("Retry") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StartingRow() {
+    val colors = FlitPalette.colors
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 24.dp, start = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 1.8.dp,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "Opening the receiver\u2026",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.ink2,
+        )
+    }
+}
+
+/** The first 8 hex characters, grouped as a person reads them off a screen. */
+internal fun shortFingerprint(fingerprint: String): String =
+    fingerprint.take(8).chunked(4).joinToString(" ")
+
+/** The whole fingerprint, in groups, for where it is checked in full. */
+internal fun groupedFingerprint(fingerprint: String): String =
+    fingerprint.chunked(4).joinToString(" ")
+
+/** "14:32" today, "16 Nov" before that: a time only means something with a day. */
+private fun whenChanged(epochSeconds: Long): String {
+    if (epochSeconds <= 0L) return "just now"
+    val zone = ZoneId.systemDefault()
+    val moment = Instant.ofEpochSecond(epochSeconds).atZone(zone)
+    return if (moment.toLocalDate() == LocalDate.now(zone)) {
+        moment.format(DateTimeFormatter.ofPattern("HH:mm"))
+    } else {
+        moment.format(DateTimeFormatter.ofPattern("d MMM"))
+    }
+}
+
+@Composable
+private fun Dot(color: Color) {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 8.dp)
+            .size(3.dp)
+            .background(color, CircleShape),
+    )
+}
+
+// Glyphs. Each is a dozen lines of Canvas: the app needs a handful of marks
+// and an icon artifact would add a dependency and a megabyte for the result.
+
+private enum class ChevronDirection { Down, Right }
+
+@Composable
+private fun DeviceGlyph(kind: String, tint: Color) {
+    Canvas(Modifier.size(26.dp)) {
+        val stroke = 1.6.dp.toPx()
+        val w = size.width
+        val h = size.height
+
+        if (kind == "phone") {
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(w * 0.30f, h * 0.03f),
+                size = Size(w * 0.40f, h * 0.94f),
+                cornerRadius = CornerRadius(w * 0.11f),
+                style = Stroke(stroke),
+            )
+            drawCircle(
+                color = tint,
+                radius = stroke * 0.85f,
+                center = Offset(w * 0.50f, h * 0.85f),
+            )
+        } else {
+            // A laptop: a screen with a base, and the base is the line that
+            // makes it read as one rather than as a monitor.
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(w * 0.12f, h * 0.10f),
+                size = Size(w * 0.76f, h * 0.58f),
+                cornerRadius = CornerRadius(w * 0.06f),
+                style = Stroke(stroke),
+            )
+            drawLine(
+                color = tint,
+                start = Offset(w * 0.02f, h * 0.82f),
+                end = Offset(w * 0.98f, h * 0.82f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Chevron(tint: Color, direction: ChevronDirection) {
+    Canvas(
+        when (direction) {
+            ChevronDirection.Down -> Modifier.size(width = 12.dp, height = 7.dp)
+            ChevronDirection.Right -> Modifier.size(width = 7.dp, height = 12.dp)
+        },
+    ) {
+        val stroke = 1.6.dp.toPx()
+        val (start, mid, end) = when (direction) {
+            ChevronDirection.Down -> Triple(
+                Offset(0f, 0f),
+                Offset(size.width / 2f, size.height),
+                Offset(size.width, 0f),
+            )
+            ChevronDirection.Right -> Triple(
+                Offset(0f, 0f),
+                Offset(size.width, size.height / 2f),
+                Offset(0f, size.height),
+            )
+        }
+        drawLine(color = tint, start = start, end = mid, strokeWidth = stroke, cap = StrokeCap.Round)
+        drawLine(color = tint, start = mid, end = end, strokeWidth = stroke, cap = StrokeCap.Round)
+    }
+}
+
+@Composable
+private fun CloseGlyph(tint: Color) {
+    Canvas(Modifier.size(16.dp)) {
+        val stroke = 1.7.dp.toPx()
+        drawLine(
+            color = tint,
+            start = Offset(size.width * 0.2f, size.height * 0.2f),
+            end = Offset(size.width * 0.8f, size.height * 0.8f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(size.width * 0.8f, size.height * 0.2f),
+            end = Offset(size.width * 0.2f, size.height * 0.8f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+@Composable
+private fun RefreshGlyph(tint: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.6.dp.toPx()
+        val inset = stroke
+        drawArc(
+            color = tint,
+            startAngle = -55f,
+            sweepAngle = 285f,
+            useCenter = false,
+            topLeft = Offset(inset, inset),
+            size = Size(size.width - inset * 2, size.height - inset * 2),
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+        // The arrowhead sits on the open end of the arc, pointing along it.
+        val tip = Offset(size.width * 0.86f, size.height * 0.14f)
+        drawLine(
+            color = tint,
+            start = Offset(tip.x - size.width * 0.20f, tip.y),
+            end = tip,
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = tip,
+            end = Offset(tip.x, tip.y + size.height * 0.20f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/** Wi‑Fi arcs over a dot: the receiver, listening. */
+@Composable
+private fun RadarGlyph(tint: Color) {
+    Canvas(Modifier.size(22.dp)) {
+        val stroke = 1.7.dp.toPx()
+        val cx = size.width / 2f
+        val cy = size.height * 0.78f
+
+        for (index in 0..2) {
+            val radius = size.width * (0.16f + index * 0.24f)
+            drawArc(
+                color = tint,
+                startAngle = -135f,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = Offset(cx - radius, cy - radius),
+                size = Size(radius * 2, radius * 2),
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
+            )
+        }
+        drawCircle(color = tint, radius = stroke * 1.1f, center = Offset(cx, cy))
+    }
+}
+
+/** The paper-plane arrow: a shaft and two barbs. */
+@Composable
+private fun SendGlyph(tint: Color) {
+    Canvas(Modifier.size(20.dp)) {
+        val stroke = 1.7.dp.toPx()
+        drawLine(
+            color = tint,
+            start = Offset(size.width * 0.10f, size.height * 0.90f),
+            end = Offset(size.width * 0.88f, size.height * 0.12f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(size.width * 0.88f, size.height * 0.12f),
+            end = Offset(size.width * 0.88f, size.height * 0.58f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(size.width * 0.88f, size.height * 0.12f),
+            end = Offset(size.width * 0.42f, size.height * 0.12f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/** Three tracks with knobs: settings without a gear. */
+@Composable
+private fun SlidersGlyph(tint: Color) {
+    Canvas(Modifier.size(20.dp)) {
+        val stroke = 1.7.dp.toPx()
+        val knobs = listOf(0.62f, 0.30f, 0.52f)
+
+        for (index in 0..2) {
+            val y = size.height * (0.18f + index * 0.32f)
+            drawLine(
+                color = tint,
+                start = Offset(size.width * 0.06f, y),
+                end = Offset(size.width * 0.94f, y),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+            drawCircle(
+                color = tint,
+                radius = stroke * 1.6f,
+                center = Offset(size.width * knobs[index], y),
+            )
+        }
+    }
+}
+
+/**
+ * Two machines and a path between them: the near phone in the accent because
+ * this phone is the near one, the far screen grey because it has not arrived.
+ */
+@Composable
+private fun EmptyGlyph(near: Color, far: Color) {
+    Canvas(Modifier.size(width = 120.dp, height = 64.dp)) {
+        val stroke = 1.5.dp.toPx()
+
+        // The near side: a phone.
+        drawRoundRect(
+            color = near,
+            topLeft = Offset(size.width * 0.10f, size.height * 0.08f),
+            size = Size(size.width * 0.18f, size.height * 0.74f),
+            cornerRadius = CornerRadius(size.width * 0.035f),
+            style = Stroke(stroke),
+        )
+
+        // The far side: a laptop, screen and base.
+        drawRoundRect(
+            color = far,
+            topLeft = Offset(size.width * 0.70f, size.height * 0.10f),
+            size = Size(size.width * 0.24f, size.height * 0.48f),
+            cornerRadius = CornerRadius(size.width * 0.025f),
+            style = Stroke(stroke),
+        )
+        drawLine(
+            color = far,
+            start = Offset(size.width * 0.67f, size.height * 0.70f),
+            end = Offset(size.width * 0.97f, size.height * 0.70f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+
+        // Three dots, not a line: nothing is connected yet.
+        for (index in 0..2) {
+            drawCircle(
+                color = far.copy(alpha = 0.65f),
+                radius = stroke * 0.85f,
+                center = Offset(
+                    size.width * (0.36f + index * 0.10f),
+                    size.height * 0.42f,
+                ),
             )
         }
     }

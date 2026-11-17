@@ -49,7 +49,8 @@ data class ManualTarget(
     val fingerprint: String,
 )
 
-/** One send, flattened for the row that draws it. */data class TransferUi(
+/** One send, flattened for the row that draws it. */
+data class TransferUi(
     val id: ULong,
     val label: String,
     val sent: Long,
@@ -235,13 +236,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Chosen destination, or `null` to choose nothing. */
-    fun select(deviceId: String) {
+    /**
+     * Choose a destination. Tapping a device always selects it: the tap already
+     * opens the picker, so toggling would leave a device chosen with no next
+     * step. [clearTarget] is the way to choose nothing.
+     */
+    fun choose(deviceId: String) {
         _state.update {
-            it.copy(
-                selected = if (it.selected == deviceId) null else deviceId,
-                manual = null,
-            )
+            it.copy(selected = deviceId, manual = null)
         }
     }
 
