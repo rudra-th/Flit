@@ -499,6 +499,12 @@ impl Consent {
                 known.insert(fingerprint);
             }
         }
+        // Logged because "why was that accepted without asking?" is otherwise a
+        // question only the person's memory can answer.
+        log::debug!(
+            "consent policy: auto-accept {enabled}, {} trusted device(s)",
+            known.len()
+        );
     }
 
     fn is_trusted(&self, fingerprint: Option<&str>) -> bool {
@@ -531,6 +537,10 @@ impl Consent {
         let all = offer.all_ids();
         if self.auto_accept.load(Ordering::Relaxed) || self.is_trusted(offer.fingerprint.as_deref())
         {
+            log::debug!(
+                "accepted an offer from {:?} without asking (auto-accept, or trusted)",
+                offer.fingerprint
+            );
             return OfferDecision::Accept(all);
         }
 
@@ -595,16 +605,26 @@ impl Consent {
         };
         // Only an accepted transfer makes a device trusted. Declining while the
         // box happened to be ticked must not quietly grant future access.
-        // Recorded before waking the receiver, so the very next offer from the
-        // same device already sees the trust.
         let trusting = remember && matches!(accepted, OfferAnswer::Accept(_));
+        // Trust is recorded only once the answer actually reached the waiting
+        // offer. A tap that lands after the offer timed out must not leave a
+        // device trusted behind a question nobody was still being asked: the
+        // sheet reports "already closed", so the person never saw a transfer
+        // that would justify it. Sending first leaves a window where the very
+        // next offer from the same device can still ask, which is the safe
+        // direction to be wrong in: a redundant sheet, never a silent one.
+        if answer.send(accepted).is_err() {
+            log::debug!("offer {id:?} closed before the answer arrived");
+            return false;
+        }
         if let Some(fingerprint) = fingerprint.filter(|_| trusting) {
             self.trusted
                 .lock()
                 .expect("poisoned trust lock")
                 .insert(fingerprint);
+            log::info!("trusted {fingerprint} after an accepted transfer");
         }
-        answer.send(accepted).is_ok()
+        true
     }
 }
 
@@ -1126,5 +1146,41 @@ impl Engine {
         if let Some(server) = self.inner.server.lock().await.take() {
             let _ = tokio::time::timeout(STOP_TIMEOUT, server).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tap that lands after the question closed must not leave the device
+    /// trusted behind it. The sheet says "already closed", so no transfer the
+    /// person actually agreed to justifies remembering them.
+    #[tokio::test]
+    async fn a_late_accept_does_not_grant_trust() {
+        let (events, _keep) = broadcast::channel(8);
+        let consent = Consent::new(events, false, Vec::new());
+        let (answer, receiver) = oneshot::channel();
+        // The offer timed out while the person was tapping: the waiting side is
+        // gone, exactly as if `decide` had given up on the channel.
+        drop(receiver);
+        consent.pending.lock().await.insert(
+            7,
+            PendingOffer {
+                answer,
+                fingerprint: Some("a65cd186".to_string()),
+            },
+        );
+
+        assert!(
+            !consent
+                .answer(OfferId(7), vec!["i1".to_string()], true)
+                .await,
+            "an answer nobody is waiting for is not an answer"
+        );
+        assert!(
+            consent.trusted_devices().is_empty(),
+            "trust needs a transfer that actually happened"
+        );
     }
 }
