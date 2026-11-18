@@ -353,7 +353,7 @@ impl ShareState {
 <p class=\"lede\">Download {them} below, {total}. Nothing is installed, and \
 nothing is uploaded.</p>\n\
 <ul class=\"files\">{rows}</ul>\n\
-<p class=\"note\">Only this computer can open these, and only for the next \
+<p class=\"note\">Anyone with this address can download these for the next \
 {minutes} {minute_word}. Keep this tab open until the download finishes.</p>\n\
 <form method=\"post\" action=\"/r/{token}/finish\">\
 <button type=\"submit\">Done</button></form>\n\
