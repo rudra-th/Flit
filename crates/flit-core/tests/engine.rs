@@ -635,3 +635,86 @@ async fn a_declined_offer_writes_nothing_and_remembers_nothing() {
     std::fs::remove_dir_all(&receiver_root).ok();
     std::fs::remove_dir_all(&sender_root).ok();
 }
+
+/// The phone keeps the trusted list in its own settings and hands it to the
+/// engine on every start, so trust has to survive that handoff: a new engine
+/// told what was saved must not ask again, without the person touching
+/// anything.
+#[tokio::test]
+async fn trust_saved_on_this_phone_still_skips_the_sheet() {
+    let receiver_identity = Arc::new(Identity::from_secret_bytes([45; 32]));
+    let (sender, sender_root, _) = start_engine(46, "restart-sender").await;
+    let mut sender_events = sender.subscribe();
+
+    let first_root = scratch("restart-first");
+    let first = Engine::start(
+        Arc::clone(&receiver_identity),
+        config(first_root.clone(), SocketAddr::from(([127, 0, 0, 1], 0))),
+    )
+    .await
+    .expect("first start");
+    first.set_auto_accept(false, Vec::new());
+
+    let before = sender_root.join("before.txt");
+    std::fs::write(&before, b"trusted before the restart").unwrap();
+    let mut first_events = first.subscribe();
+    sender
+        .send_to(
+            first.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: before,
+                name: Some("before.txt".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+    let (offer, ids, _) = offered(&mut first_events).await;
+    assert!(first.answer_offer(offer, ids, true).await);
+    assert!(matches!(
+        terminal(&mut sender_events).await,
+        Event::TransferFinished { .. }
+    ));
+    let saved = first.trusted_devices();
+    assert_eq!(saved.len(), 1, "the answer granted exactly one device");
+    first.stop().await;
+
+    let second_root = scratch("restart-second");
+    let second = Engine::start(
+        Arc::clone(&receiver_identity),
+        config(second_root.clone(), SocketAddr::from(([127, 0, 0, 1], 0))),
+    )
+    .await
+    .expect("second start");
+    second.set_auto_accept(false, saved);
+
+    let after = sender_root.join("after.txt");
+    std::fs::write(&after, b"still trusted after the restart").unwrap();
+    sender
+        .send_to(
+            second.addr(),
+            &receiver_identity.fingerprint(),
+            vec![SendTarget {
+                path: after,
+                name: Some("after.txt".to_string()),
+            }],
+        )
+        .await
+        .expect("send starts");
+    // No sheet and no answer: the transfer only finishes inside the offer
+    // window if the saved list was honoured.
+    assert!(matches!(
+        terminal(&mut sender_events).await,
+        Event::TransferFinished { ref items, .. } if items.iter().all(|item| item.error.is_none())
+    ));
+    assert_eq!(
+        std::fs::read(second_root.join("after.txt")).unwrap(),
+        b"still trusted after the restart"
+    );
+
+    sender.stop().await;
+    second.stop().await;
+    std::fs::remove_dir_all(&first_root).ok();
+    std::fs::remove_dir_all(&second_root).ok();
+    std::fs::remove_dir_all(&sender_root).ok();
+}
