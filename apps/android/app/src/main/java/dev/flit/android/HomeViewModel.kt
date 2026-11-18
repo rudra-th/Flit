@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /** What the screen draws. One object, one recomposition per refresh. */
 data class HomeState(
@@ -47,6 +48,12 @@ data class HomeState(
     val autoAccept: Boolean = false,
     /** Fingerprints accepted on their own. Persisted. */
     val trusted: List<String> = emptyList(),
+    /**
+     * The name each trusted device had when it was trusted, keyed by
+     * lowercase fingerprint. Persisted: a trusted phone that is not on the
+     * network right now should still read as a phone, not as "Trusted device".
+     */
+    val trustedNames: Map<String, String> = emptyMap(),
     val error: String? = null,
     /** One sentence to show once, then clear. */
     val notice: String? = null,
@@ -118,6 +125,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             // announces the moment it starts, and an offer must be answered by
             // the policy already in hand, not by one pushed a second later.
             val (autoAccept, trusted) = withContext(Dispatchers.IO) { loadPolicy() }
+            val trustedNames = withContext(Dispatchers.IO) { loadNames() }
             val started = withContext(Dispatchers.IO) {
                 runCatching {
                     // Multicast is filtered by the Wi-Fi stack unless a lock is
@@ -135,6 +143,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                         error = null,
                         autoAccept = autoAccept,
                         trusted = trusted,
+                        trustedNames = trustedNames,
                     )
                 }
                 listen(open)
@@ -385,21 +394,33 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val answered = open.answerOffer(offer.id, accepted, trusting)
-                    val trusted = if (answered && trusting) {
+                    val granted = answered && trusting
+                    val trusted = if (granted) {
                         open.trustedDevices().also { savePolicy(_state.value.autoAccept, it) }
                     } else {
                         null
                     }
-                    answered to trusted
+                    // The name is written only alongside the trust it labels,
+                    // and only once the engine says the answer landed: a tap
+                    // that arrived too late must not leave a name behind for a
+                    // device that was never trusted.
+                    val names = if (granted) {
+                        rememberName(fingerprint, offer.alias)
+                    } else {
+                        _state.value.trustedNames
+                    }
+                    Triple(answered, trusted, names)
                 }
             }
 
-            result.onSuccess { (answered, trusted) ->
+            result.onSuccess { (answered, trusted, names) ->
                 when {
                     !answered -> _state.update {
                         it.copy(notice = "That offer already closed.")
                     }
-                    trusted != null -> _state.update { it.copy(trusted = trusted) }
+                    trusted != null -> _state.update {
+                        it.copy(trusted = trusted, trustedNames = names)
+                    }
                 }
             }.onFailure { err ->
                 _state.update { it.copy(notice = describe(err)) }
@@ -427,7 +448,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         val open = engine
         val autoAccept = _state.value.autoAccept
         val trusted = _state.value.trusted.filterNot { it == fingerprint }
-        _state.update { it.copy(trusted = trusted) }
+        val names = forgetName(fingerprint)
+        _state.update { it.copy(trusted = trusted, trustedNames = names) }
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -454,6 +476,52 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             .edit()
             .putBoolean(KEY_AUTO_ACCEPT, enabled)
             .putStringSet(KEY_TRUSTED, trusted.toSet())
+            .apply()
+    }
+
+    /**
+     * Names of trusted devices, as they were when the person trusted them.
+     *
+     * Kept apart from the fingerprint set, which stays the only thing the
+     * policy is decided on: a name can be changed by its owner at any time and
+     * must never grant anything.
+     */
+    private fun loadNames(): Map<String, String> {
+        val raw = getApplication<Application>()
+            .getSharedPreferences(CONSENT_PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_TRUSTED_NAMES, null)
+            ?: return emptyMap()
+        return runCatching {
+            val json = JSONObject(raw)
+            json.keys().asSequence().associateWith { json.optString(it) }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun rememberName(fingerprint: String, alias: String): Map<String, String> {
+        val names = loadNames().toMutableMap()
+        val name = alias.trim()
+        if (fingerprint.isEmpty() || name.isEmpty()) {
+            return names
+        }
+        names[fingerprint.lowercase()] = name
+        saveNames(names)
+        return names
+    }
+
+    private fun forgetName(fingerprint: String): Map<String, String> {
+        val names = loadNames().toMutableMap()
+        names.remove(fingerprint.lowercase())
+        saveNames(names)
+        return names
+    }
+
+    private fun saveNames(names: Map<String, String>) {
+        val json = JSONObject()
+        names.forEach { (fingerprint, alias) -> json.put(fingerprint, alias) }
+        getApplication<Application>()
+            .getSharedPreferences(CONSENT_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_TRUSTED_NAMES, json.toString())
             .apply()
     }
 
@@ -637,5 +705,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         const val CONSENT_PREFS = "consent"
         const val KEY_AUTO_ACCEPT = "auto_accept"
         const val KEY_TRUSTED = "trusted"
+        const val KEY_TRUSTED_NAMES = "trusted_names"
     }
 }

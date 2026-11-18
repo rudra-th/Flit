@@ -1161,8 +1161,8 @@ private fun SettingsTab(
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                text = "Every device on this Wi\u2011Fi can send without a " +
-                                    "tap. Off means a sheet asks first.",
+                                text = "Off asks before every send, apart from the devices " +
+                                    "you trusted below.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.ink3,
                             )
@@ -1186,39 +1186,51 @@ private fun SettingsTab(
             Spacer(Modifier.height(2.dp))
             if (state.trusted.isEmpty()) {
                 Text(
-                    text = "None yet. Accept a transfer and tick \u201cAlways accept\u201d " +
-                        "to add one.",
+                    text = "None yet. Tick \u201cAlways accept\u201d on a transfer to add one.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.ink3,
                     modifier = Modifier.padding(start = 2.dp, top = 2.dp),
                 )
             } else {
-                state.trusted.forEach { fingerprint ->
-                    val alias = state.peers
-                        .firstOrNull { it.fingerprint.equals(fingerprint, ignoreCase = true) }
-                        ?.alias
-                    Row(
+                Surface(color = colors.raised, shape = RoundedCornerShape(18.dp)) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 52.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = alias ?: "Trusted device",
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = shortFingerprint(fingerprint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.ink3,
-                                fontFamily = FontFamily.Monospace,
-                            )
-                        }
-                        TextButton(onClick = { onForgetTrusted(fingerprint) }) {
-                            Text("Forget")
+                        state.trusted.forEach { fingerprint ->
+                            // A live peer name is the current one; the saved
+                            // name keeps the row legible when that device is
+                            // off the network. Neither grants anything.
+                            val alias = state.peers
+                                .firstOrNull { it.fingerprint.equals(fingerprint, ignoreCase = true) }
+                                ?.alias
+                                ?.takeIf { it.isNotBlank() }
+                                ?: state.trustedNames[fingerprint.lowercase()]
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 52.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = alias ?: "Trusted device",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = shortFingerprint(fingerprint),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.ink3,
+                                        fontFamily = FontFamily.Monospace,
+                                    )
+                                }
+                                TextButton(onClick = { onForgetTrusted(fingerprint) }) {
+                                    Text("Forget")
+                                }
+                            }
                         }
                     }
                 }
