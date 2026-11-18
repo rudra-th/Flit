@@ -140,12 +140,12 @@ fun HomeScreen(
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
+        // Read the mode first and clear it even when the picker came back
+        // empty: a cancelled browser share must not make the next ordinary
+        // pick open a share instead of sending.
+        val forBrowser = sharingPicked
+        sharingPicked = false
         if (uris.isNotEmpty()) {
-            // The same picker serves both paths: the files decide nothing, the
-            // destination does. Read the mode first, then clear it, so a second
-            // pick can never inherit the first one's intent.
-            val forBrowser = sharingPicked
-            sharingPicked = false
             if (forBrowser) onShare(uris) else onSend(uris)
         }
     }

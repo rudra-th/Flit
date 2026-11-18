@@ -758,6 +758,21 @@ async fn a_browser_share_lives_until_it_is_stopped() {
         "reading the address must not change it"
     );
 
+    // A second share replaces the first, and it gets its own address: the old
+    // one must stop answering the moment the new one starts.
+    let second = root.join("later.txt");
+    std::fs::write(&second, b"the second address").unwrap();
+    let replaced = engine.open_share(vec![second]).await.expect("a new share");
+    assert_ne!(
+        replaced.url, target.url,
+        "a new share must not reuse the old token"
+    );
+    assert_eq!(
+        engine.share().await.expect("the new share").url,
+        replaced.url,
+        "the screen must show the share that is open now"
+    );
+
     engine.close_share().await;
     assert!(
         engine.share().await.is_none(),

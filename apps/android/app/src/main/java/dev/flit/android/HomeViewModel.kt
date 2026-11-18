@@ -110,6 +110,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private var engine: MobileEngine? = null
     private var multicast: WifiManager.MulticastLock? = null
     private var poller: Job? = null
+    /**
+     * Bumped whenever a share is written from outside the poller. A poll that
+     * started before the change carries the old number, so its answer cannot
+     * erase a share that opened while it was in flight.
+     */
+    private var shareEpoch = 0
     /** Runs out the undo window; cancelled by undo, commits the disk delete. */
     private var deleteJob: Job? = null
     private var starting = false
@@ -166,6 +172,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         val open = engine ?: return
         if (_state.value.refreshing) return
         _state.update { it.copy(refreshing = true) }
+        val epoch = shareEpoch
 
         viewModelScope.launch {
             // The share rides along: a share that timed out, or whose browser
@@ -176,7 +183,16 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
             read.onSuccess { (device, peers, share) ->
                 _state.update {
-                    it.copy(device = device, peers = peers, share = share, error = null, refreshing = false)
+                    it.copy(
+                        device = device,
+                        peers = peers,
+                        // A share opened while this read was in flight is
+                        // newer than what the read saw; only the poller that
+                        // started after it may report on it.
+                        share = if (epoch == shareEpoch) share else it.share,
+                        error = null,
+                        refreshing = false,
+                    )
                 }
             }.onFailure { err ->
                 _state.update { it.copy(error = describe(err), refreshing = false) }
@@ -402,6 +418,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             result.onSuccess { info ->
+                shareEpoch++
                 _state.update { it.copy(share = info, sharing = false) }
             }.onFailure { err ->
                 _state.update { it.copy(sharing = false, notice = describe(err)) }
@@ -412,6 +429,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /** Stop the browser share. The address stops answering at once. */
     fun stopShare() {
         val open = engine ?: return
+        shareEpoch++
         _state.update { it.copy(share = null) }
         viewModelScope.launch {
             withContext(Dispatchers.IO) { runCatching { open.closeShare() } }

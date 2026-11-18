@@ -1182,8 +1182,9 @@ impl Engine {
             return Err(EngineError::NothingToSend);
         }
 
-        // A file that cannot be read is reported before the old share is
-        // closed: a failed attempt should not take away an address that worked.
+        // A file that cannot be read is reported before anything is touched. The
+        // old share is closed only once the new one is listening: a failed
+        // attempt should not take away an address that worked.
         let files = |paths: &[PathBuf]| -> Result<Vec<ShareFile>, EngineError> {
             Ok(paths
                 .iter()
@@ -1192,8 +1193,6 @@ impl Engine {
                 .collect::<Result<Vec<_>, _>>()?)
         };
         let chosen = files(&paths)?;
-
-        self.close_share().await;
 
         let share = match BrowserShare::open(
             self.inner.info.alias.clone(),
@@ -1216,6 +1215,12 @@ impl Engine {
             }
             other => other?,
         };
+
+        // The old share loses its address after the new one has one, never
+        // before: opening a second share is not a reason to interrupt the
+        // browser already reading the first.
+        self.close_share().await;
+
         let target = ShareTarget {
             url: share.url(),
             files: share.files().len(),
