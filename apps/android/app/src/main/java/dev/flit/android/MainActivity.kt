@@ -35,6 +35,8 @@ class MainActivity : ComponentActivity() {
                     onNoticeShown = home::clearNotice,
                     onChoose = home::choose,
                     onSend = home::send,
+                    onShare = home::shareToBrowser,
+                    onStopShare = home::stopShare,
                     onCancelSend = home::cancelSend,
                     onDismissTransfer = home::dismissTransfer,
                     onUseAddress = home::useAddress,
@@ -51,11 +53,12 @@ class MainActivity : ComponentActivity() {
 
     /**
      * A file can land while the screen is off or another app is in front, and
-     * the engine has no event for a receive. Re-reading the folder here is what
-     * makes the list match the disk when someone comes back.
+     * the engine has no event for a receive. A browser share can also run out
+     * its ten minutes while the app is away. Re-reading both here is what makes
+     * the list and the address match the truth when someone comes back.
      */
     override fun onResume() {
         super.onResume()
-        home.refreshReceived()
+        home.refreshAll()
     }
 }

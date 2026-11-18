@@ -84,6 +84,7 @@ import dev.flit.android.ffi.DeviceInfo
 import dev.flit.android.ffi.OfferEvent
 import dev.flit.android.ffi.PeerInfo
 import dev.flit.android.ffi.ReceivedFile
+import dev.flit.android.ffi.ShareInfo
 import java.io.File
 import java.time.Instant
 import java.time.LocalDate
@@ -113,6 +114,8 @@ fun HomeScreen(
     onNoticeShown: () -> Unit,
     onChoose: (String) -> Unit,
     onSend: (List<Uri>) -> Unit,
+    onShare: (List<Uri>) -> Unit,
+    onStopShare: () -> Unit,
     onCancelSend: () -> Unit,
     onDismissTransfer: () -> Unit,
     onUseAddress: (String, String) -> Unit,
@@ -130,11 +133,22 @@ fun HomeScreen(
     var addressing by remember { mutableStateOf(false) }
     /** The ledger row whose actions are on the table, if any. */
     var fileActions by remember { mutableStateOf<ReceivedFile?>(null) }
+    /** The picker was opened for a browser share, not a device send. */
+    var sharingPicked by rememberSaveable { mutableStateOf(false) }
     val snacks = remember { SnackbarHostState() }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris -> if (uris.isNotEmpty()) onSend(uris) }
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            // The same picker serves both paths: the files decide nothing, the
+            // destination does. Read the mode first, then clear it, so a second
+            // pick can never inherit the first one's intent.
+            val forBrowser = sharingPicked
+            sharingPicked = false
+            if (forBrowser) onShare(uris) else onSend(uris)
+        }
+    }
 
     // Renaming restarts the receiver, so the sentence arrives after the engine
     // is already coming back up. A toast keeps it out of the screen's layout.
@@ -184,6 +198,11 @@ fun HomeScreen(
                         state = state,
                         onChoose = onChoose,
                         onPick = { picker.launch(arrayOf("*/*")) },
+                        onShare = {
+                            sharingPicked = true
+                            picker.launch(arrayOf("*/*"))
+                        },
+                        onStopShare = onStopShare,
                         onCancelSend = onCancelSend,
                         onDismissTransfer = onDismissTransfer,
                         onAddress = { addressing = true },
@@ -477,12 +496,18 @@ private fun Avatar(alias: String?) {
  * Devices are the content: a list of names, each row one tap away from the
  * file picker. A chosen device is an ink band — the only dark surface on the
  * paper, so the eye lands on it first and the check confirms it.
+ *
+ * A computer that has nothing installed is still a destination: "Share with a
+ * browser" opens the same picker and then holds the address that computer
+ * needs. The panel is the whole instruction, so there is nothing to remember.
  */
 @Composable
 private fun SendTab(
     state: HomeState,
     onChoose: (String) -> Unit,
     onPick: () -> Unit,
+    onShare: () -> Unit,
+    onStopShare: () -> Unit,
     onCancelSend: () -> Unit,
     onDismissTransfer: () -> Unit,
     onAddress: () -> Unit,
@@ -492,9 +517,9 @@ private fun SendTab(
 
     val chosen = state.peers.firstOrNull { it.deviceId == state.selected }
     val target = chosen?.alias ?: state.manual?.addr
-    // The slab is for choosing files. While a send is in flight the transfer
-    // panel replaces it, so only one thing asks for attention at a time.
-    val slabVisible = target != null && state.transfer == null
+    // The slab is for choosing files. While a send is in flight, or a share is
+    // open, that panel replaces it: only one thing asks for attention at a time.
+    val slabVisible = target != null && state.transfer == null && state.share == null
 
     Column(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -509,6 +534,13 @@ private fun SendTab(
                         onCancel = onCancelSend,
                         onDismiss = onDismissTransfer,
                     )
+                }
+            }
+
+            val share = state.share
+            if (share != null) {
+                item(key = "share") {
+                    SharePanel(share = share, onStop = onStopShare)
                 }
             }
 
@@ -557,6 +589,23 @@ private fun SendTab(
                         label = "Send to an address",
                         onClick = onAddress,
                     )
+                }
+
+                // One address at a time: while a share is open, its panel owns
+                // the way out, and a second invitation would replace it without
+                // saying so.
+                if (state.share == null) {
+                    item(key = "browser") {
+                        QuietAction(
+                            label = if (state.sharing) {
+                                "Opening a browser share\u2026"
+                            } else {
+                                "Share with a browser"
+                            },
+                            onClick = onShare,
+                            enabled = !state.sharing,
+                        )
+                    }
                 }
             }
         }
@@ -873,7 +922,7 @@ private fun Empty(discovering: Boolean) {
 
 /** A quiet footer action: text, 48 dp tall, no fill, no outline. */
 @Composable
-private fun QuietAction(label: String, onClick: () -> Unit) {
+private fun QuietAction(label: String, onClick: () -> Unit, enabled: Boolean = true) {
     val colors = FlitPalette.colors
 
     Row(
@@ -881,14 +930,101 @@ private fun QuietAction(label: String, onClick: () -> Unit) {
             .fillMaxWidth()
             .padding(top = 6.dp)
             .heightIn(min = 48.dp)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = "+  $label",
             style = MaterialTheme.typography.labelMedium,
-            color = colors.ink2,
+            color = if (enabled) colors.ink2 else colors.ink3,
         )
+    }
+}
+
+/**
+ * A browser share, and the only thing it needs: an address to read.
+ *
+ * The address is the capability, so it is set in mono and is never truncated —
+ * half a URL read out loud is a support call. The line under it says what the
+ * other computer has to do, which is nothing but open a browser.
+ */
+@Composable
+private fun SharePanel(share: ShareInfo, onStop: () -> Unit) {
+    val colors = FlitPalette.colors
+    val slab = MaterialTheme.colorScheme.onBackground
+    val paper = colors.paper
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    val files = if (share.files == 1u) "1 file" else "${share.files} files"
+    val left = if (share.minutes <= 1u) {
+        "about a minute left"
+    } else {
+        "about ${share.minutes} minutes left"
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp),
+        color = slab,
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(start = 22.dp, end = 14.dp, top = 18.dp, bottom = 8.dp),
+        ) {
+            Text(
+                text = "Read this on the other computer",
+                style = MaterialTheme.typography.headlineSmall,
+                color = paper,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = share.url,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                color = paper,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "$files \u00b7 $left",
+                style = MaterialTheme.typography.bodySmall,
+                color = paper.copy(alpha = 0.66f),
+            )
+            Text(
+                text = "Any browser on this Wi\u2011Fi. Nothing to install.",
+                style = MaterialTheme.typography.bodySmall,
+                color = paper.copy(alpha = 0.66f),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onStop) {
+                    Text(text = "Stop", color = paper)
+                }
+                Spacer(Modifier.width(4.dp))
+                Button(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(share.url))
+                        Toast.makeText(context, "Address copied", Toast.LENGTH_SHORT).show()
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+                ) {
+                    Text("Copy address", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
     }
 }
 

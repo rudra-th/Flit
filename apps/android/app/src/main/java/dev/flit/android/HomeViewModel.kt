@@ -13,6 +13,7 @@ import dev.flit.android.ffi.OfferEvent
 import dev.flit.android.ffi.OfferListener
 import dev.flit.android.ffi.PeerInfo
 import dev.flit.android.ffi.ReceivedFile
+import dev.flit.android.ffi.ShareInfo
 import dev.flit.android.ffi.TransferEvent
 import dev.flit.android.ffi.TransferListener
 import java.io.File
@@ -54,6 +55,10 @@ data class HomeState(
      * network right now should still read as a phone, not as "Trusted device".
      */
     val trustedNames: Map<String, String> = emptyMap(),
+    /** A browser share the person could read out to another computer. */
+    val share: ShareInfo? = null,
+    /** A share is being opened; the picker's files are still being copied. */
+    val sharing: Boolean = false,
     val error: String? = null,
     /** One sentence to show once, then clear. */
     val notice: String? = null,
@@ -163,11 +168,16 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(refreshing = true) }
 
         viewModelScope.launch {
+            // The share rides along: a share that timed out, or whose browser
+            // closed the page, must stop being an address on this screen in the
+            // same breath as the peer list.
             val read = withContext(Dispatchers.IO) {
-                runCatching { open.device() to open.peers() }
+                runCatching { Triple(open.device(), open.peers(), open.share()) }
             }
-            read.onSuccess { (device, peers) ->
-                _state.update { it.copy(device = device, peers = peers, error = null, refreshing = false) }
+            read.onSuccess { (device, peers, share) ->
+                _state.update {
+                    it.copy(device = device, peers = peers, share = share, error = null, refreshing = false)
+                }
             }.onFailure { err ->
                 _state.update { it.copy(error = describe(err), refreshing = false) }
             }
@@ -340,9 +350,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val outbox = File(getApplication<Application>().cacheDir, "outbox").apply { mkdirs() }
-                    uris.mapNotNull { copyIn(outbox, it) }.map { it.absolutePath }
-                }.mapCatching { paths ->
+                    val paths = copyOutbox(uris)
                     if (paths.isEmpty()) error("No file could be read.")
                     when {
                         target != null -> open.sendFiles(target, paths)
@@ -370,6 +378,50 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /** A finished row has been read; clear it. */
     fun dismissTransfer() {
         _state.update { it.copy(transfer = null) }
+    }
+
+    /**
+     * Offer the files behind `uris` to a browser on this Wi-Fi.
+     *
+     * The phone serves; the other computer only reads, and installs nothing.
+     * The files are copied into the cache exactly as a send's are, because a
+     * picked file is a `content://` URI the engine cannot open.
+     */
+    fun shareToBrowser(uris: List<Uri>) {
+        val open = engine ?: return
+        if (_state.value.sharing) return
+        _state.update { it.copy(sharing = true) }
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val paths = copyOutbox(uris)
+                    if (paths.isEmpty()) error("No file could be read.")
+                    open.openShare(paths)
+                }
+            }
+
+            result.onSuccess { info ->
+                _state.update { it.copy(share = info, sharing = false) }
+            }.onFailure { err ->
+                _state.update { it.copy(sharing = false, notice = describe(err)) }
+            }
+        }
+    }
+
+    /** Stop the browser share. The address stops answering at once. */
+    fun stopShare() {
+        val open = engine ?: return
+        _state.update { it.copy(share = null) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { open.closeShare() } }
+        }
+    }
+
+    /** Copy picked `content://` documents into the cache and name them. */
+    private fun copyOutbox(uris: List<Uri>): List<String> {
+        val outbox = File(getApplication<Application>().cacheDir, "outbox").apply { mkdirs() }
+        return uris.mapNotNull { copyIn(outbox, it) }.map { it.absolutePath }
     }
 
     /**
