@@ -19,7 +19,9 @@ mod session;
 pub use consent::{Offer, OfferContext, OfferDecision, OfferGate};
 pub use http::{ResponseBody, State};
 pub use pin::{MAX_ATTEMPTS, PinError, PinGuard};
-pub use session::{ACTIVE_WINDOW, Commit, Item, PREPARE_ATTEMPTS, Session, Sessions, is_sha256};
+pub use session::{
+    ACTIVE_WINDOW, ADMISSION_WINDOW, Commit, Item, PREPARE_ATTEMPTS, Session, Sessions, is_sha256,
+};
 
 use std::{
     future::Future,
@@ -510,7 +512,7 @@ mod tests {
         let verifier = AcceptAnyClientCert;
         assert!(verifier.offer_client_auth());
         assert!(!verifier.client_auth_mandatory());
-        assert!(verifier.root_hint_subjects().is_none());
+        assert!(verifier.root_hint_subjects().is_empty());
     }
 
     #[test]
