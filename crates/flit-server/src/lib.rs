@@ -15,12 +15,16 @@ mod consent;
 mod http;
 mod pin;
 mod session;
+mod share;
 
 pub use consent::{Offer, OfferContext, OfferDecision, OfferGate};
 pub use http::{ResponseBody, State};
 pub use pin::{MAX_ATTEMPTS, PinError, PinGuard};
 pub use session::{
     ACTIVE_WINDOW, ADMISSION_WINDOW, Commit, Item, PREPARE_ATTEMPTS, Session, Sessions, is_sha256,
+};
+pub use share::{
+    BrowserShare, DEFAULT_SHARE_TTL, MAX_SHARE_FILES, SHARE_PORT, ShareError, ShareFile,
 };
 
 use std::{
