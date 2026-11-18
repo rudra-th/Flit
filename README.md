@@ -3,15 +3,19 @@
 **Files, straight across.** Send a folder from one device to another over your
 own network. No account, no cloud, no configuration.
 
-> **Status: pre-alpha.** The protocol is specified, and the engine works:
-> identity, path safety, the pinned TLS 1.3 transport, discovery, multi-file
-> sessions, inline text items, and resume across a sender restart. A folder with
-> ten thousand files goes over in one session, every item is verified end to end
-> before it gets its real name, and re-running an interrupted send streams only
-> the bytes the receiver still needs. The desktop window is built on the engine
-> facade (`flit-core`): nearby devices, drag and drop, live progress with a
-> cancel, past sends, and a network doctor. The Android app is in
-> `apps/android`; the browser page is still ahead.
+> **Status: pre-alpha, feature-complete for v1.** The protocol is specified, and
+> the engine works: identity, path safety, the pinned TLS 1.3 transport,
+> discovery, multi-file sessions, inline text items, and resume across a sender
+> restart. A folder with ten thousand files goes over in one session, every item
+> is verified end to end before it gets its real name, and re-running an
+> interrupted send streams only the bytes the receiver still needs. Nothing
+> lands without an answer: the receiver asks before a transfer, and "always
+> accept" remembers a key rather than a name. The desktop window is built on the
+> engine facade (`flit-core`): nearby devices, drag and drop, live progress with
+> a cancel, past sends, a network doctor, the consent question, and a browser
+> share. The Android app is in `apps/android`, with the same receiving rules and
+> the same browser share. A borrowed computer needs nothing installed: the
+> sender serves a read-only page on port 47822, and nothing is uploaded.
 
 **[getflit.surge.sh](https://getflit.surge.sh)** is the page that explains it: the
 three moves, a real size-to-time figure, and five promises you can switch off.

@@ -59,6 +59,6 @@ the phone were receiving from a screen, which is the opposite direction.
 
 ## Not planned
 
-- Typed addresses are never removed when the QR path lands. A code is faster,
+- Typed addresses are never removed when a code path lands. A code is faster,
   not a replacement for the escape hatch.
 - No cloud relay, no account, no address book. The network is the address.
