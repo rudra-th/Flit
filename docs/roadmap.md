@@ -26,25 +26,30 @@ as long as the process does, and the UI is honest about that: the Receive tab
 is the state. Revisit only if people ask for receiving while the phone is in a
 pocket.
 
-**The browser page is reached by scanning a code.** The page in §8 is
-receive-only and runs on a machine that has a browser and no Flit install. The
-phone is the sender, so the phone scans: the page shows
-`flit://<ip>:<port>?fp=<fingerprint>&t=<token>` and the app turns it into the
-same manual target it would otherwise have typed.
+**The browser page is served by the sender.** A person who wants to hand files
+to a borrowed computer picks them as usual and chooses to open them in a
+browser. The phone binds port 47822, shows a short address, and the computer
+downloads from it. Nothing is installed on the computer, and nothing is
+uploaded to the phone.
+
+The page shows that address as a code as well as text, so a device with a
+camera can scan it instead of typing. The code is drawn by the sender, because
+the sender is the side that already has the files. A scanner in the app would
+only be needed if the phone were the one receiving from a screen, which is the
+opposite direction; v1 does not include one.
 
 ## Order
 
-1. **The browser page, before the scanner.** A scanner with nothing to scan is
-   unverifiable. The page needs the token lifecycle and the port binding from
-   §8, and it renders the code itself: SVG generated on the receiving side, so
-   the page loads no script, makes no third-party request and works with the
-   network unplugged.
-2. **The scanner.** Camera preview and QR decoding in the app, offline, no
-   Google services, no network. Camera permission is asked when a person taps
-   "Scan a code" and never before. Result: a manual target, which the send path
-   already understands, so no new consent or addressing rules.
-3. **Consent on hardware.** Before either of the above ships, the matrix in
-   `docs/verification.md` has to pass on two real phones.
+1. **Consent on hardware, before anything ships.** The matrix in
+   `docs/verification.md` has to pass on two real phones. It is the gate, not a
+   later chore, and it can run in parallel with the work below because the
+   share path never touches consent.
+2. **The browser share, sender side.** The token lifecycle and read-only
+   listener from §8, the page, and downloads that resume. The page loads no
+   script and makes no third-party request, so it works on a network with no
+   internet.
+3. **The share UI.** Pick files as usual, choose "open in a browser", show the
+   address and the code, and stop the share when the person is done.
 
 ## Not planned
 

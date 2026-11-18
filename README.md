@@ -10,8 +10,8 @@ own network. No account, no cloud, no configuration.
 > before it gets its real name, and re-running an interrupted send streams only
 > the bytes the receiver still needs. The desktop window is built on the engine
 > facade (`flit-core`): nearby devices, drag and drop, live progress with a
-> cancel, past sends, and a network doctor. The Android app and the browser page
-> are still ahead.
+> cancel, past sends, and a network doctor. The Android app is in
+> `apps/android`; the browser page is still ahead.
 
 **[getflit.surge.sh](https://getflit.surge.sh)** is the page that explains it: the
 three moves, a real size-to-time figure, and five promises you can switch off.

@@ -43,13 +43,13 @@ Rules:
 |---|---|---|
 | Discovery announce | UDP multicast to `224.0.0.167` | 47820 |
 | Control and data | HTTPS (TLS 1.3) | 47821 |
-| Browser receive session | HTTP (no TLS) | 47822 |
+| Browser share | HTTP (no TLS) | 47822 |
 
 The TLS listener may fail to bind 47821 and fall back to an ephemeral port. In
 that case the **announce carries the real port** and peers must use it. Clients
 never assume 47821; they use the advertised value.
 
-Port 47822 is bound only while a browser session is open and never accepts
+Port 47822 is bound only while a browser share is open and never accepts
 uploads. See §8.
 
 ---
@@ -566,15 +566,31 @@ partially applied.
 
 ## 8. Browser receive
 
-The browser client exists because HTTP does. It is receive-only.
+A borrowed computer cannot install anything, and a browser cannot trust a
+self-signed certificate without a warning. So the **sending** device serves the
+share over plain HTTP on port 47822, and the bytes flow one way: the browser
+downloads files the person chose to give it.
 
-- Opening `/r/{token}` on port 47822 serves a static page.
-- The token is single-use, expires in 10 minutes, and is bound to one IP.
-- The port is bound only while a session is open, and only accepts `GET`s for
-  the page and `POST`s for `finish`. It never accepts uploads.
+- The listener is bound only while a share is open, on the device that has the
+  files. It is never bound at rest.
+- `GET /r/{token}` serves a static page listing the shared files. The page loads
+  no script and makes no third-party request, so it works on a network with no
+  internet. It carries `Cache-Control: no-store`.
+- The token is 128 random bits in hex. It expires 10 minutes after the share
+  opens, and the first address that opens the page claims it: from then on only
+  that address may use it. Any other address, and any unknown or expired token,
+  gets `404` with no explanation.
+- `GET /r/{token}/{n}` serves one shared file by position, never by path.
+  `Accept-Ranges: bytes` and a single `Range` are supported, so a download that
+  drops resumes instead of starting over.
+- `POST /r/{token}/finish` records that the browser says it saved everything and
+  ends the share early. It is a receipt, not a guarantee: nothing on the sender
+  is decided by it.
+- The listener never accepts uploads. `PUT`, `POST` to any other path, and
+  request bodies on the file routes are all refused.
 - Plain HTTP is deliberate: a self-signed certificate would show a browser
-  warning, and a warning trains users to click through warnings. The token, the
-  binding and the short lifetime are the trade instead.
+  warning, and a warning trains people to click through warnings. The token, its
+  short lifetime and the address binding are the trade instead.
 
 ---
 
