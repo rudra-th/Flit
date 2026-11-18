@@ -677,6 +677,96 @@ svg {
   max-width: 46ch;
 }
 
+/* the question, drawn the way both shells draw it: who is asking, what would
+   arrive, the box that remembers a key, and two answers */
+
+[data-ui] .ui-ask {
+  display: grid;
+  gap: 4px;
+}
+
+[data-ui] .ui-ask-title {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: 16px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+[data-ui] .ui-files {
+  display: grid;
+  gap: 2px;
+  margin: 8px -8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-ui] .ui-files li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+
+[data-ui] .ui-files li > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-ui] .ui-files .ui-meta {
+  flex: none;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-ui] .ui-remember {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+[data-ui] .ui-box {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+[data-ui] .ui-remember .ui-meta {
+  display: block;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-ui] .ui-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+[data-ui] .ui-btn.is-accent {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* recent rows (the hero's third frame) */
 
 [data-ui] .ui-recent {

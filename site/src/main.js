@@ -1,6 +1,6 @@
 // The page's three jobs, in one small file:
 //
-//  1. the hero reel: the sentence holds while three frames of the app pass
+//  1. the hero reel: the sentence holds while four frames of the app pass
 //     through it, one per screen of scroll (decoration, so it fails well);
 //  2. the speed figure: the visitor's own folder size, through a stated rate;
 //  3. the rest of the motion layer: entrances, the band switches, the clock.
@@ -19,7 +19,7 @@ const phone = window.matchMedia("(max-width: 860px)");
 /* --- the hero ------------------------------------------------------------
  * One performance, driven by one number: how far the reader has scrolled
  * through the stage. The cover leaves, the sentence arrives from both edges,
- * the frame opens between the halves, then three states of the app run through
+ * the frame opens between the halves, then four states of the app run through
  * it. Scroll-*driven*, not scroll-jacked: nothing here captures the wheel, so
  * the reader can stop mid-sentence and scrub it back.
  *
@@ -27,7 +27,7 @@ const phone = window.matchMedia("(max-width: 860px)");
  *   0.04–0.17  the cover leaves upward
  *   0.10–0.28  the sentence arrives from the two edges
  *   0.19–0.33  the frame opens from a hairline
- *   0.33–0.93  three frames, one continuous pass
+ *   0.33-0.93  four frames, one continuous pass
  */
 
 const hero = document.querySelector(".hero");

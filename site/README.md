@@ -61,10 +61,10 @@ the app, the "three moves" are written as calls (what you do) and responses
 - **The hero scene** — one performance driven by one scroll number. A cover
   line ("Two devices, one room.") holds the first screen; scrolling fades it and
   brings "Send a folder / across the room." in from the two edges, opens a
-  window between the halves, then runs three fragments (Nearby, Transfers,
-  Recent) through it, holding each state for a beat before the next. It scrubs
-  backwards as willingly as forwards; nothing captures the wheel. Decoration
-  only, and the fragments are drawn in DOM, not screenshots.
+  window between the halves, then runs four fragments (Nearby, the question,
+  Transfers, Recent) through it, holding each state for a beat before the next.
+  It scrubs backwards as willingly as forwards; nothing captures the wheel.
+  Decoration only, and the fragments are drawn in DOM, not screenshots.
 - **The phone hero** — the same beats in one column: the cover, the two halves
   of the sentence stacked and sliding in from the sides, then the window opening
   under them and holding the same three states. A phone gets 320 svh of scene
@@ -98,10 +98,13 @@ reason:
    photo set as atmosphere. Redrawn: this product's pictures are its own
    interface, and a stock photograph would break both the zero-third-party rule
    and the nothing-invented rule. The four fragments carry the picture count.
-2. **The identity badge → nothing.** The app shows a device's two-word name and
-   the fingerprint it pins; the fragments show the name, because a fingerprint
-   clipped into a mock would look like a claim the page cannot verify. The FAQ
-   says where the fingerprint lives instead.
+2. **The identity badge → nothing, except in the question.** The app shows a
+   device's two-word name and the fingerprint it pins; the fragments show the
+   name, because a fingerprint clipped into a badge would look like a claim the
+   page cannot verify. The one fragment that does print a key is the consent
+   question, and it prints it exactly where the app prints it: under "Always
+   accept from this device", because that box is the whole point of the
+   fragment. The FAQ says where the full fingerprint lives.
 3. **Monospace addresses → the text face with tabular figures.** The app sets
    `192.168.1.31` and `89 MB/s` in a mono face; on a marketing page mono outside
    `<code>` is a gate failure. Two faces only: Poppins for display, Open Sans for
@@ -122,9 +125,10 @@ reason:
 7. **The contact tile is a link to GitHub issues.** No address exists to print;
    `github.com/rudra-th/Flit/issues` is real and reaches a human.
 8. **The end of the funnel says "nothing to download yet".** Flit is pre-alpha
-   and the installer is not built. A disabled download button or a waitlist would
-   be furniture; the page states the position and links the two things that do
-   exist: the source and the releases page.
+   and there is no signed release or installer. A disabled download button or a
+   waitlist would be furniture; the page states the position, says what is built
+   and what is not, and links the two things that do exist: the source and the
+   releases page.
 9. **The licence line is `MIT OR Apache-2.0`, not GPL.** The repository is dual
    licensed (`LICENSE-MIT`, `LICENSE-APACHE`); the page says what the repository
    says.
@@ -155,12 +159,19 @@ reason:
 - Five promises: *What it never does* — never asks for an account · never gives a
   broken file its name · never trusts a key it has not pinned · never repeats what
   already arrived · never needs the internet.
-- Questions: eight, from "Do I need an account?" to "Is it free?"
+- Questions: ten, from "Do I need an account?" to "Is it free?", including the
+  two the app now answers: the consent question ("Does it just take whatever
+  arrives?") and the browser share ("What if the other computer can't install
+  anything?").
 - End: *Nothing to download yet.*
 
 Demo data used in the fragments (the same batch throughout): Studio PC /
-Rhea – Pixel 9 / Attic NAS, "Q3 handover" 15 files · 186.4 MB, 89 MB/s, 2.1 s,
-transfer header "2 running · 113 MB/s" (89 + 24).
+Rhea — Pixel 9 / Attic NAS, "Q3 handover" 15 files · 186.4 MB, 89 MB/s, 2.1 s,
+transfer header "2 running · 113 MB/s" (89 + 24). The question names "copper
+fox" sending one file, `Q3 handover/floorplan.pdf`, 2.4 MB — small enough that
+the whole question fits the same window as the other three fragments — with the
+key `3f9a1c74b8` under the remember box, which is the key the demo device list
+gives copper fox.
 
 ## The gate
 
@@ -178,14 +189,15 @@ node ~/.agents/skills/design-taste-frontend/scripts/inspect.mjs \
 input, so the hero and the pinned "Three moves" are judged on their in-between
 states, not just their rest states.
 
-Current result: **0 FAIL, 4 WARN**.
+Current result: **0 FAIL, 5 WARN**.
 
 | Warning | Why it stands |
 | --- | --- |
 | `palette-cream` | `#f6f5f2` is the app's own ground token, not a decorative cream; the palette is kept from the brand by direction. |
 | `size-count` | 16 sizes because the interface fragments are true to the app's UI scale (12–14 px) while the page runs on a five-step display scale. |
+| `no-real-pictures` | Photographs are the one thing this page may not have: the subject's world is the interface, the rule is no stock, and nothing may load from a third party. The four fragments are the pictures, drawn in DOM from the app's own tokens. |
 | `no-footage` | No clip fits and none may be licensed: the subject's world is the interface, and the fragments are drawn in DOM. |
-| `long-pin` | The hero sentence and the "Three moves" heading each hold for four screens, but every screen changes what is under them: the cover hands to the sentence, the window opens, three states pass through, then three columns answer in turn. That is the rule's own remedy, not a defence. |
+| `long-pin` | The hero sentence and the "Three moves" heading each hold for four screens, but every screen changes what is under them: the cover hands to the sentence, the window opens, four states pass through, then three columns answer in turn. That is the rule's own remedy, not a defence. |
 
 ## House rules this page obeys
 

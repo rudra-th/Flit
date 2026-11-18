@@ -126,6 +126,42 @@
 
             <figure class="reel-frame" data-ui>
               <div class="ui-head">
+                <span class="ui-title">On their screen</span>
+                <span class="ui-head-note">nothing is written yet</span>
+              </div>
+
+              <div class="ui-ask">
+                <p class="ui-ask-title">
+                  <span class="ui-name">copper fox</span> wants to send 1 file
+                </p>
+                <p class="ui-meta">
+                  2.4 MB &middot; Nothing is saved until you accept.
+                </p>
+
+                <ul class="ui-files">
+                  <li>
+                    <span>Q3 handover/floorplan.pdf</span>
+                    <span class="ui-meta">2.4 MB</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="ui-remember">
+                <span class="ui-box" aria-hidden="true"></span>
+                <span>
+                  <span>Always accept from this device</span>
+                  <span class="ui-meta">from 3f9a1c74b8</span>
+                </span>
+              </div>
+
+              <div class="ui-actions">
+                <span class="ui-btn">Decline</span>
+                <span class="ui-btn is-accent">Accept</span>
+              </div>
+            </figure>
+
+            <figure class="reel-frame" data-ui>
+              <div class="ui-head">
                 <span class="ui-title">Transfers</span>
                 <span class="ui-head-note">2 running · 113 MB/s</span>
               </div>
@@ -655,6 +691,33 @@
 
             <details class="faq-tile" name="question" data-reveal>
               <summary>
+                <span class="faq-q">Does it just take whatever arrives?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                No. The first time a device sends to you, a question asks: accept
+                or decline. Nothing is written until you answer, and an answer
+                that comes too late grants nothing. "Always accept" remembers that
+                device's key, not its name, and it is off unless you turn it on.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
+                <span class="faq-q">What if the other computer can't install anything?</span>
+                <span class="faq-plus" aria-hidden="true"></span>
+              </summary>
+              <p class="faq-a">
+                Send it to a browser instead. Flit serves the files itself at a
+                short address; the other computer types it and downloads. Nothing
+                is installed there and nothing is uploaded — the bytes go from
+                your disk to their browser. The address stops answering after ten
+                minutes, when the download finishes, or when you close it.
+              </p>
+            </details>
+
+            <details class="faq-tile" name="question" data-reveal>
+              <summary>
                 <span class="faq-q">Does it work across the internet?</span>
                 <span class="faq-plus" aria-hidden="true"></span>
               </summary>
@@ -671,9 +734,10 @@
                 <span class="faq-plus" aria-hidden="true"></span>
               </summary>
               <p class="faq-a">
-                Not yet. Windows and Linux are the first targets and both build
-                today; Android is next. Nothing is downloadable until the
-                installer is done.
+                Yes. The Android app does what the desktop does: nearby devices, the
+                consent question with a key it remembers, and a browser share. Both
+                shells build today. What is missing is a signed release, so there is
+                nothing on this page to click yet.
               </p>
             </details>
 
@@ -700,10 +764,11 @@
               Nothing to download yet.
             </h2>
             <p class="get-body" data-reveal>
-              Flit is pre-alpha. The protocol, the engine and the desktop shell
-              are built and tested; the installer is not. When there is a build it
-              will be a release on GitHub — no email, no waitlist, no counter on
-              this page.
+              Flit is pre-alpha, and the v1 features are built: the engine, the
+              desktop shell, the Android app, the consent question on both, and the
+              browser page a borrowed computer can read. What is missing is the
+              release — signed builds and an installer. When they exist they will
+              be a GitHub release: no email, no waitlist, no counter on this page.
             </p>
             <div class="get-actions" data-reveal>
               <a class="btn btn-solid" href="https://github.com/rudra-th/Flit"
@@ -724,16 +789,20 @@
                 <span class="status-state">tested</span>
               </li>
               <li data-reveal>
+                <span>Consent, both shells</span>
+                <span class="status-state">asks before a file lands</span>
+              </li>
+              <li data-reveal>
                 <span>Desktop shell</span>
                 <span class="status-state">builds on Windows and Linux</span>
               </li>
               <li data-reveal>
-                <span>Installer</span>
-                <span class="status-state is-off">not yet</span>
+                <span>Android</span>
+                <span class="status-state">builds from source</span>
               </li>
               <li data-reveal>
-                <span>Android</span>
-                <span class="status-state is-off">next</span>
+                <span>Signed release and installer</span>
+                <span class="status-state is-off">not yet</span>
               </li>
             </ul>
           </div>
