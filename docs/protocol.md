@@ -374,7 +374,7 @@ the offer is shown, then answers one of:
   the sender may offer again later, deliberately.
 - `409 busy` — a session was opened within the last 60 seconds and is still
   the receiver's active transfer. One at a time keeps the question answerable;
-  a resume of the **same** manifest from the **same** fingerprint is not a second
+  a resume of the **same** manifest from the **same** sender is not a second
   transfer and is admitted.
 - `429 rate_limited` — more than 12 prepare attempts from one source address in
   60 seconds. Counted before the sheet is shown, so a spammer cannot turn consent
@@ -387,6 +387,11 @@ fingerprint from §4.1:
 - a global switch that accepts every offer without asking;
 - a trusted-device list, consulted when the switch is off, so a device the person
   chose before skips the sheet while everyone else still asks.
+
+"Always accept from this device" adds that fingerprint to the list only when the
+accept actually reached the offer. An answer that arrives after the 60 seconds
+are up changes nothing: the sheet says the question closed, the sender was told
+`408`, and no transfer the person saw begin would justify remembering anybody.
 
 The PIN, when configured, is checked before the offer exists: a wrong or missing
 PIN never reaches the consent sheet.
@@ -407,6 +412,13 @@ receiver answers with the session it already has instead of opening a new one:
 - The session must still be open (not swept, not cancelled) and must have no
   committed item. A session with anything installed is finished or finishing, so
   it is not eligible.
+- The sender must be the one that opened it, and that is decided by the form of
+  identity it has. Two fingerprints must match. Two anonymous senders are
+  otherwise identical, so they must come from the same address: a name, size and
+  hash are guessable for anything public, and matching "no owner" to "no
+  certificate" would let a stranger on the same Wi-Fi take over the transfer the
+  person just approved. The forms never mix, so a consent given to a proof of
+  identity is not inherited without one.
 - `session_id` is the existing one and `accepted`/`rejected` are recomputed from
   the items it holds, so the sender sees the same plan it saw before.
 - Partial `.part` bytes are kept, and **`resume` says how many**: an item id maps
