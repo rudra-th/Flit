@@ -141,6 +141,12 @@ pub struct Session {
     /// request must present the same value, so a session id alone is not a
     /// capability another device can borrow.
     pub owner: Option<String>,
+    /// Address the session was opened from.
+    ///
+    /// Only consulted when there is no fingerprint: two anonymous senders are
+    /// otherwise indistinguishable, and the address is the single fact that
+    /// says "the same machine came back" rather than "someone else did".
+    pub peer: IpAddr,
     /// Set when either side cancels; in-flight uploads must stop.
     pub cancelled: bool,
     /// When this session was created, for sweeping.
@@ -154,6 +160,7 @@ impl Session {
         id: String,
         key: String,
         owner: Option<String>,
+        peer: IpAddr,
     ) -> std::io::Result<Self> {
         let dir = root.join(WORK_DIR).join("parts").join(&id);
         fs::create_dir_all(&dir)?;
@@ -164,6 +171,7 @@ impl Session {
             dir,
             items: HashMap::new(),
             owner,
+            peer,
             cancelled: false,
             created: SystemTime::now(),
         })
@@ -471,7 +479,12 @@ impl Sessions {
         // owns the receiver is not a second transfer.
         let key = manifest_key(&manifest);
         if let Some(adopted) = self
-            .adopt(&key, &manifest, context.fingerprint.as_deref())
+            .adopt(
+                &key,
+                &manifest,
+                context.fingerprint.as_deref(),
+                context.peer,
+            )
             .await
         {
             log::debug!("adopted an open session for the same manifest");
@@ -531,14 +544,19 @@ impl Sessions {
 
         let id = new_session_id();
         log::debug!("opening session {id} for {} items", manifest.len());
-        let mut session =
-            match Session::create(&self.root, id.clone(), key, context.fingerprint.clone()) {
-                Ok(session) => session,
-                Err(_) => {
-                    self.release();
-                    return Err(ErrorCode::Internal);
-                }
-            };
+        let mut session = match Session::create(
+            &self.root,
+            id.clone(),
+            key,
+            context.fingerprint.clone(),
+            context.peer,
+        ) {
+            Ok(session) => session,
+            Err(_) => {
+                self.release();
+                return Err(ErrorCode::Internal);
+            }
+        };
         let mut accepted = Vec::new();
         let mut rejected = Vec::new();
         for (index, item) in manifest.into_iter().enumerate() {
@@ -583,6 +601,7 @@ impl Sessions {
         key: &str,
         manifest: &[ManifestItem],
         fingerprint: Option<&str>,
+        peer: IpAddr,
     ) -> Option<(Arc<Mutex<Session>>, SessionResponse)> {
         let map = self.map.lock().await;
         for session in map.values() {
@@ -592,7 +611,7 @@ impl Sessions {
             // A session id is a capability, but only for the device that opened
             // it: a second sender with the same manifest must not inherit
             // someone else's half-written bytes.
-            if !guard.owned_by(fingerprint) {
+            if !same_sender(guard.owner.as_deref(), guard.peer, fingerprint, peer) {
                 continue;
             }
             if guard.cancelled || guard.key != key || guard.items.values().any(|item| item.done) {
@@ -730,6 +749,31 @@ fn item_bytes(item: &ManifestItem) -> u64 {
 /// Item ids are included because the client derives them from position in the
 /// batch, which is stable for a re-run of the same command. The text payload
 /// is included because text items carry their bytes in the manifest.
+/// Whether a prepare from `fingerprint` at `peer` may reopen a session that
+/// `owner` opened from `opened_from`.
+///
+/// A fingerprint names exactly one device, so that is the whole test when both
+/// sides present one. Without certificates every sender is the same empty
+/// value, and treating "no owner" as a match would let a stranger on the same
+/// Wi-Fi reopen, finish or cancel a transfer the person approved for someone
+/// else. The address is the narrowest fact left in that case: it cannot name a
+/// device, but it does distinguish "the same machine came back" from "another
+/// one arrived". Mixing the two forms never matches, because a session the
+/// person approved for an anonymous sender must not become the property of a
+/// proven identity, or the other way round.
+fn same_sender(
+    owner: Option<&str>,
+    opened_from: IpAddr,
+    fingerprint: Option<&str>,
+    peer: IpAddr,
+) -> bool {
+    match (owner, fingerprint) {
+        (Some(owner), Some(claim)) => owner == claim,
+        (None, None) => opened_from == peer,
+        _ => false,
+    }
+}
+
 fn manifest_key(manifest: &[ManifestItem]) -> String {
     let mut hasher = Sha256::new();
     for item in manifest {
@@ -1085,5 +1129,56 @@ mod tests {
         assert!(!is_link_unsupported(&std::io::Error::from(
             ErrorKind::AlreadyExists
         )));
+    }
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse().expect("a literal address")
+    }
+
+    /// The proven owner is the whole answer when both sides present one, and
+    /// the address never overrides it: the same device on a new address resumes,
+    /// a different device from the same address does not.
+    #[test]
+    fn a_fingerprint_names_the_only_sender_that_may_resume() {
+        let owner = Some("a65cd186");
+        assert!(same_sender(owner, ip("10.0.0.2"), owner, ip("10.0.0.2")));
+        assert!(
+            same_sender(owner, ip("10.0.0.2"), owner, ip("10.0.0.9")),
+            "a device that proved its identity is not tied to one address"
+        );
+        assert!(!same_sender(
+            owner,
+            ip("10.0.0.2"),
+            Some("d186a65c"),
+            ip("10.0.0.2")
+        ));
+    }
+
+    /// Without certificates there is no owner to compare, so the address has to
+    /// stand in. Matching `None` to `None` would hand one person's approved
+    /// session to any anonymous device that guessed the manifest.
+    #[test]
+    fn an_anonymous_session_reopens_only_from_its_own_address() {
+        assert!(same_sender(None, ip("10.0.0.2"), None, ip("10.0.0.2")));
+        assert!(!same_sender(None, ip("10.0.0.2"), None, ip("10.0.0.3")));
+    }
+
+    /// Consent is given to a form of identity, so it cannot change form: neither
+    /// an anonymous client inheriting a proven session, nor a proven one
+    /// inheriting an anonymous session.
+    #[test]
+    fn identity_forms_do_not_mix() {
+        assert!(!same_sender(
+            Some("a65cd186"),
+            ip("10.0.0.2"),
+            None,
+            ip("10.0.0.2")
+        ));
+        assert!(!same_sender(
+            None,
+            ip("10.0.0.2"),
+            Some("a65cd186"),
+            ip("10.0.0.2")
+        ));
     }
 }
