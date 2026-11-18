@@ -535,10 +535,18 @@ impl Consent {
     /// Decide an offer, emitting the event a UI draws when a person must answer.
     async fn decide(&self, offer: Offer) -> OfferDecision {
         let all = offer.all_ids();
-        if self.auto_accept.load(Ordering::Relaxed) || self.is_trusted(offer.fingerprint.as_deref())
-        {
+        // The two reasons are logged apart: "why did this land with no sheet?"
+        // is answered by which one fired, not by the fact that one did.
+        if self.auto_accept.load(Ordering::Relaxed) {
             log::debug!(
-                "accepted an offer from {:?} without asking (auto-accept, or trusted)",
+                "auto-accept is on: took an offer from {:?} without asking",
+                offer.fingerprint
+            );
+            return OfferDecision::Accept(all);
+        }
+        if self.is_trusted(offer.fingerprint.as_deref()) {
+            log::debug!(
+                "trusted device {:?}: took its offer without asking",
                 offer.fingerprint
             );
             return OfferDecision::Accept(all);
@@ -618,11 +626,11 @@ impl Consent {
             return false;
         }
         if let Some(fingerprint) = fingerprint.filter(|_| trusting) {
+            log::info!("trusted {fingerprint} after an accepted transfer");
             self.trusted
                 .lock()
                 .expect("poisoned trust lock")
                 .insert(fingerprint);
-            log::info!("trusted {fingerprint} after an accepted transfer");
         }
         true
     }
