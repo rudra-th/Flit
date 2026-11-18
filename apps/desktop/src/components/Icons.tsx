@@ -149,6 +149,17 @@ export function WindowIcon(props: IconProps) {
   );
 }
 
+/** A browser window: the destination that needs nothing installed. */
+export function BrowserIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M3.5 9h17" />
+      <path d="M6.5 6.75h.01M9 6.75h.01" />
+    </svg>
+  );
+}
+
 export function DropIcon(props: IconProps) {
   return (
     <svg {...base(props)}>

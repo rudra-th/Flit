@@ -18,7 +18,7 @@ use tauri::{AppHandle, State};
 use tokio::{net::TcpStream, time::timeout};
 
 use crate::{
-    dto::{Check, Discovery, Doctor, HistoryEntry, NetInterface, Peer, Status, TrayEntry},
+    dto::{Check, Discovery, Doctor, HistoryEntry, NetInterface, Peer, ShareInfo, Status, TrayEntry},
     state::Shell,
 };
 
@@ -275,6 +275,45 @@ pub async fn send_to_address(
 
     shell.inner.data().note_paths(id.as_u64(), spell(&paths));
     Ok(id.as_u64())
+}
+
+/// Offer files to a browser on this network, and return the address.
+///
+/// The page is read-only by construction: it lists what was chosen and serves
+/// those bytes, and there is nothing to install on the other computer. Files
+/// are taken, not folders, because a page of two hundred links is the most one
+/// share can explain.
+#[tauri::command]
+pub async fn open_share(
+    shell: State<'_, Shell>,
+    paths: Vec<PathBuf>,
+) -> Result<ShareInfo, String> {
+    let target = shell
+        .inner
+        .engine
+        .open_share(paths)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(ShareInfo::from(&target))
+}
+
+/// Stop the browser share. The address stops answering at once.
+#[tauri::command]
+pub async fn close_share(shell: State<'_, Shell>) -> Result<(), String> {
+    shell.inner.engine.close_share().await;
+    Ok(())
+}
+
+/// The browser share that is open, if any. `None` once it expired or ended.
+#[tauri::command]
+pub async fn share(shell: State<'_, Shell>) -> Result<Option<ShareInfo>, String> {
+    Ok(shell
+        .inner
+        .engine
+        .share()
+        .await
+        .as_ref()
+        .map(ShareInfo::from))
 }
 
 /// Stop a send. False when it had already ended.

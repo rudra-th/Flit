@@ -17,6 +17,7 @@ import type {
   NetInterface,
   Offer,
   Peer,
+  Share,
   Status,
   TrayEntry,
 } from "./types";
@@ -186,6 +187,13 @@ function offerWanted(): boolean {
   return new URLSearchParams(location.search).get("demo") === "offer";
 }
 
+/** `?demo=share` opens a browser share on load, so its panel can be reviewed
+ * without picking files. */
+function shareWanted(): boolean {
+  if (typeof location === "undefined") return false;
+  return new URLSearchParams(location.search).get("demo") === "share";
+}
+
 interface Runner {
   timer: number;
   cancelled: boolean;
@@ -201,6 +209,30 @@ export function createDemo(): FlitBridge {
   const policy = { autoAccept: false, trusted: [] as string[] };
   /** The question on screen, if one is waiting for an answer. */
   let offer: Offer | null = null;
+  /** The browser share, as its deadline; the panel reads the time left. */
+  let opened: { files: number; deadline: number } | null = null;
+
+  /** How long a demo share answers, matching the engine's ten minutes. */
+  const SHARE_LIFETIME = 10 * 60_000;
+
+  // `?demo=share` starts with an address on screen. It is set here, not when
+  // the first listener arrives: the window reads the share before it
+  // subscribes, exactly as the shell does when it opens onto an active one.
+  if (shareWanted()) opened = { files: 4, deadline: Date.now() + SHARE_LIFETIME };
+
+  const readShare = (): Share | null => {
+    if (opened === null) return null;
+    const left = opened.deadline - Date.now();
+    if (left <= 0) {
+      opened = null;
+      return null;
+    }
+    return {
+      url: "http://192.168.1.18:47822",
+      files: opened.files,
+      expiresIn: Math.ceil(left / 1000),
+    };
+  };
 
   const emit = (event: EngineEvent) => {
     for (const listener of listeners) listener(event);
@@ -482,6 +514,20 @@ export function createDemo(): FlitBridge {
       ];
     },
 
+    async openShare(paths) {
+      if (paths.length === 0) throw new Error("Choose at least one file.");
+      opened = { files: paths.length, deadline: Date.now() + SHARE_LIFETIME };
+      return readShare()!;
+    },
+
+    async closeShare() {
+      opened = null;
+    },
+
+    async share() {
+      return readShare();
+    },
+
     async answerOffer(id, accept, remember) {
       const waiting = offer;
       if (waiting === null || waiting.id !== id) return false;
@@ -522,6 +568,10 @@ export function createDemo(): FlitBridge {
         seeded = true;
         window.setTimeout(seedLanes, 120);
       }
+      // A share opened for the review is the same object the picker path
+      // writes, so the panel and its countdown behave identically.
+      // A share opened for the review is the same object the picker path
+      // writes, so the panel and its countdown behave identically.
       if (offerWanted() && offer === null) {
         const items = [
           { name: "Q3 handover/floorplan.pdf", bytes: 2_480_000, text: false },

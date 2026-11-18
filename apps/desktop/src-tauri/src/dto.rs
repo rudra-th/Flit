@@ -141,6 +141,28 @@ impl From<&ItemOutcome> for Item {
     }
 }
 
+/// A browser share that is open, as the window draws it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInfo {
+    /// The address to read out; it names the port that answered.
+    pub url: String,
+    /// How many files the page lists.
+    pub files: usize,
+    /// Seconds left before the share closes on its own.
+    pub expires_in: u64,
+}
+
+impl From<&flit_core::ShareTarget> for ShareInfo {
+    fn from(target: &flit_core::ShareTarget) -> Self {
+        Self {
+            url: target.url.clone(),
+            files: target.files,
+            expires_in: target.expires_in.as_secs(),
+        }
+    }
+}
+
 /// One thing inside an offer, as the question about it shows it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

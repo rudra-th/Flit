@@ -101,6 +101,16 @@ export interface Doctor {
   interfaces: NetInterface[];
 }
 
+/** A browser share that is open: one address, and how long it answers. */
+export interface Share {
+  /** The address to read out; it names the port that answered. */
+  url: string;
+  /** How many files the page lists. */
+  files: number;
+  /** Seconds left before the share closes on its own. */
+  expiresIn: number;
+}
+
 export interface TrayEntry {
   path: string;
   name: string;

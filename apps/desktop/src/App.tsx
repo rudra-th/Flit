@@ -13,6 +13,7 @@ import type {
   Offer,
   Peer,
   ReceivingPolicy,
+  Share,
   Status,
   Transfer,
   TrayEntry,
@@ -55,6 +56,10 @@ export default function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   /** The question on screen, if a device is waiting for an answer. */
   const [offer, setOffer] = useState<Offer | null>(null);
+  /** The browser share whose address is on screen, if one is open. */
+  const [share, setShare] = useState<Share | null>(null);
+  /** The share picker is being answered; a second click would open another. */
+  const [sharing, setSharing] = useState(false);
   /** What this computer does when an offer arrives with nobody deciding. */
   const [policy, setPolicy] = useState<ReceivingPolicy>({
     autoAccept: false,
@@ -73,6 +78,10 @@ export default function App() {
   bridgeRef.current = bridge;
   const samples = useRef(new Map<number, Sample>());
   const toastTimer = useRef<number | undefined>(undefined);
+  /** Bumped whenever a share is written from outside the poller. A poll that
+   * started before the change carries the old number, so its answer cannot
+   * erase a share that opened while it was in flight. */
+  const shareEpoch = useRef(0);
 
   const say = useCallback((text: string, tone: Toast["tone"] = "ok") => {
     setToast({ text, tone });
@@ -180,6 +189,69 @@ export default function App() {
       },
     ]);
   }, [say]);
+
+  /**
+   * Pick files and hold them at an address a browser can read.
+   *
+   * The picker is its own act rather than a send of the tray: a browser share
+   * is files only (a page of folder links says nothing useful), and starting
+   * from the tray would quietly drop whatever else sat there.
+   */
+  const shareFiles = useCallback(async () => {
+    const live = bridgeRef.current;
+    if (!live) return;
+    setSharing(true);
+    try {
+      const paths = await live.pickFiles("Share in a browser");
+      if (paths.length === 0) return;
+      const opened = await live.openShare(paths);
+      shareEpoch.current += 1;
+      setShare(opened);
+    } catch (error) {
+      say(describe(error), "bad");
+    } finally {
+      setSharing(false);
+    }
+  }, [say]);
+
+  /** Stop the share. The panel goes at once; the address stops answering when
+   * the shell says it did, and a failure puts the address back on screen. */
+  const stopShare = useCallback(() => {
+    const live = bridgeRef.current;
+    shareEpoch.current += 1;
+    setShare(null);
+    if (!live) return;
+    void live.closeShare().catch(async (error) => {
+      say(describe(error), "bad");
+      // The address may still be answering; if it is, it goes back on screen
+      // rather than leaving a live capability with no way to stop it.
+      const still = await live.share().catch(() => null);
+      if (still !== null) {
+        shareEpoch.current += 1;
+        setShare(still);
+      }
+    });
+  }, [say]);
+
+  // A share ends on its own at ten minutes, and the panel is the only place
+  // that says so. Polling while it is open keeps the countdown honest and
+  // takes the address down when the engine has already closed it.
+  const shareOpen = share !== null;
+  useEffect(() => {
+    if (!shareOpen) return;
+    const timer = window.setInterval(() => {
+      const live = bridgeRef.current;
+      if (!live) return;
+      const epoch = shareEpoch.current;
+      void live
+        .share()
+        .then((current) => {
+          if (epoch === shareEpoch.current) setShare(current);
+        })
+        .catch(() => undefined);
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [shareOpen]);
 
   const handleEvent = useCallback(
     (event: EngineEvent) => {
@@ -390,12 +462,13 @@ export default function App() {
         if (disposed) return;
         setBridge(live);
 
-        const [me, list, sends, checks, receiving] = await Promise.all([
+        const [me, list, sends, checks, receiving, open] = await Promise.all([
           live.status(),
           live.peers(),
           live.history(),
           live.doctor(),
           readPolicy(live),
+          live.share(),
         ]);
         if (disposed) return;
 
@@ -404,6 +477,7 @@ export default function App() {
         setHistory(sends);
         setDoctor(checks);
         setPolicy(receiving);
+        setShare(open);
 
         cleanups.push(await live.subscribe(handleEvent));
         cleanups.push(
@@ -664,6 +738,8 @@ export default function App() {
             tray={tray}
             transfers={Object.values(transfers)}
             history={history}
+            share={share}
+            sharing={sharing}
             onSelect={toggle}
             onAdd={() => {
               void (async () => {
@@ -675,6 +751,10 @@ export default function App() {
             onPaste={() => {
               void addClipboard();
             }}
+            onShare={() => {
+              void shareFiles();
+            }}
+            onStopShare={stopShare}
             onRemove={(removed) =>
               setTray((current) =>
                 current.filter((entry) =>

@@ -2,11 +2,19 @@ import { useEffect, useState } from "react";
 
 import { DeviceCard } from "../components/DeviceCard";
 import { HistoryHead, HistoryRow } from "../components/HistoryRow";
-import { AlertIcon, CopyIcon, PlusIcon } from "../components/Icons";
+import { AlertIcon, BrowserIcon, CopyIcon, PlusIcon } from "../components/Icons";
 import { Lane } from "../components/Lane";
+import { SharePanel } from "../components/SharePanel";
 import { Tray } from "../components/Tray";
 import { rate } from "../lib/format";
-import type { HistoryEntry, Peer, Status, Transfer, TrayEntry } from "../lib/types";
+import type {
+  HistoryEntry,
+  Peer,
+  Share,
+  Status,
+  Transfer,
+  TrayEntry,
+} from "../lib/types";
 
 /** The screen answers one question first: where can this go, right now?
  *
@@ -21,9 +29,13 @@ export function SendView({
   tray,
   transfers,
   history,
+  share,
+  sharing,
   onSelect,
   onAdd,
   onPaste,
+  onShare,
+  onStopShare,
   onRemove,
   onClear,
   onSend,
@@ -38,9 +50,13 @@ export function SendView({
   tray: TrayEntry[];
   transfers: Transfer[];
   history: HistoryEntry[];
+  share: Share | null;
+  sharing: boolean;
   onSelect: (deviceId: string) => void;
   onAdd: () => void;
   onPaste: () => void;
+  onShare: () => void;
+  onStopShare: () => void;
   onRemove: (entry: TrayEntry) => void;
   onClear: () => void;
   onSend: (deviceIds?: string[]) => void;
@@ -108,12 +124,28 @@ export function SendView({
             <CopyIcon size={13} />
             Paste
           </button>
+          {share === null ? (
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={onShare}
+              disabled={sharing}
+              title="Show files at an address any browser on this network can open"
+            >
+              <BrowserIcon size={13} />
+              {sharing ? "Opening…" : "Share in a browser"}
+            </button>
+          ) : null}
           <button type="button" className="btn" onClick={onAdd}>
             <PlusIcon size={14} />
             Add files
           </button>
         </div>
       </header>
+
+      {share !== null ? (
+        <SharePanel share={share} onStop={onStopShare} />
+      ) : null}
 
       <section className="panel" aria-label="Devices">
         <div className="section-label">

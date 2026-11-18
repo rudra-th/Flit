@@ -28,10 +28,10 @@ pocket.
 
 **The browser page is served by the sender.** A person who wants to hand files
 to a borrowed computer picks them as usual and chooses to open them in a
-browser. The phone serves them on port 47822 and shows a short address, and the
-computer downloads from it. Nothing is installed on the computer, and nothing is
-uploaded to the phone: the bytes go straight from the phone's disk to the
-browser.
+browser. The sending device — phone or desktop — serves them on port 47822 and
+shows a short address, and the computer downloads from it. Nothing is installed
+on the computer, and nothing is uploaded to the sender: the bytes go straight
+from the sender's disk to the browser.
 
 Port 47822 is tried first because it is the one a person may have seen on
 another screen, but it is not a requirement. If something else already holds
@@ -53,9 +53,9 @@ the phone were receiving from a screen, which is the opposite direction.
 2. **The browser share.** The token lifecycle and read-only listener from §8,
    the page, and downloads that resume are in place. The page loads no script
    and makes no third-party request, so it works on a network with no internet.
-3. **The share UI.** The phone offers "Share with a browser", shows the address
-   and when the share ends, copies it, and stops it on request. The desktop has
-   no share UI yet; its shell is the next shell to grow one.
+3. **The share UI.** Both shells offer "Share in a browser", show the address
+   and when the share ends, copy it, and stop it on request. The panel is the
+   same instruction on either screen, and the address is never truncated.
 
 ## Not planned
 

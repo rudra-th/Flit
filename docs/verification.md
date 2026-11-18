@@ -68,4 +68,8 @@ instead of a sheet. What to check once, on Windows:
   next send ask again.
 - Escape and a click outside the dialog both decline, and a late answer says
   the transfer already closed.
+- "Share in a browser" opens a picker and then a panel with an address; another
+  computer on the same Wi-Fi opens the address and downloads the file under its
+  own name. Stop makes the address stop answering, and a share left alone
+  closes itself after ten minutes and takes the panel with it.
 

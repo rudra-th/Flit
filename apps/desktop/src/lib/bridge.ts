@@ -15,6 +15,7 @@ import type {
   EngineEvent,
   HistoryEntry,
   Peer,
+  Share,
   Status,
   TrayEntry,
 } from "./types";
@@ -37,7 +38,13 @@ export interface FlitBridge {
   /** Whatever is on the system clipboard, as text. Empty means nothing there. */
   readClipboard(): Promise<string>;
   cancel(id: number): Promise<boolean>;
-  pickFiles(): Promise<string[]>;
+  pickFiles(title?: string): Promise<string[]>;
+  /** Offer files to a browser on this network, and return the address. */
+  openShare(paths: string[]): Promise<Share>;
+  /** Stop the browser share. The address stops answering at once. */
+  closeShare(): Promise<void>;
+  /** The browser share that is open, if any. `null` once it ended. */
+  share(): Promise<Share | null>;
   /** Answer the question a device is asking. False when it already closed. */
   answerOffer(id: number, accept: boolean, remember: boolean): Promise<boolean>;
   autoAccept(): Promise<boolean>;
@@ -74,6 +81,9 @@ const shell: FlitBridge = {
     invoke<number>("send_to_address", { addr, fingerprint, paths }),
   readClipboard: () => invoke<string>("read_clipboard"),
   cancel: (id) => invoke<boolean>("cancel_transfer", { id }),
+  openShare: (paths) => invoke<Share>("open_share", { paths }),
+  closeShare: () => invoke<void>("close_share"),
+  share: () => invoke<Share | null>("share"),
   answerOffer: (id, accept, remember) =>
     invoke<boolean>("answer_offer", { id, accept, remember }),
   autoAccept: () => invoke<boolean>("auto_accept"),
@@ -81,10 +91,10 @@ const shell: FlitBridge = {
   trustedDevices: () => invoke<string[]>("trusted_devices"),
   forgetTrusted: (fingerprint) =>
     invoke<boolean>("forget_trusted", { fingerprint }),
-  async pickFiles() {
+  async pickFiles(title = "Send with Flit") {
     const picked = await open({
       multiple: true,
-      title: "Send with Flit",
+      title,
     });
     if (picked === null) return [];
     return Array.isArray(picked) ? picked : [picked];
