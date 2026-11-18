@@ -11,7 +11,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    io::ErrorKind,
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex as StdMutex,
@@ -24,7 +25,10 @@ use flit_api::{DeviceType, Info, ItemKind, ManifestItem};
 use flit_client::{Client, ClientError, FileOutcome, SavedFile, SendProgress, SendTarget};
 use flit_crypto::Identity;
 use flit_discovery::{Discovery, DiscoveryConfig, Peer, PeerSource, announce_for};
-use flit_server::{Offer, OfferDecision, OfferGate, Server, ServerConfig, ServerError};
+use flit_server::{
+    BrowserShare, Offer, OfferDecision, OfferGate, SHARE_PORT, Server, ServerConfig, ServerError,
+    ShareError, ShareFile,
+};
 use tokio::{
     sync::{Mutex, broadcast, oneshot},
     task::JoinHandle,
@@ -371,6 +375,9 @@ pub enum EngineError {
     /// No visible device has that identifier.
     #[error("no nearby device with id {0}")]
     UnknownPeer(String),
+    /// The browser share could not open, or a chosen file could not be read.
+    #[error(transparent)]
+    Share(#[from] ShareError),
 }
 
 /// How to start an engine.
@@ -448,6 +455,32 @@ struct Inner {
     watch: Mutex<Option<JoinHandle<()>>>,
     transfers: Mutex<HashMap<TransferId, Running>>,
     next_transfer: AtomicU64,
+    /// The one browser share this engine may have open, if any.
+    share: Mutex<Option<ShareRunning>>,
+}
+
+/// One browser share being served.
+struct ShareRunning {
+    url: String,
+    files: usize,
+    deadline: Instant,
+    task: JoinHandle<()>,
+    stop: oneshot::Sender<()>,
+}
+
+/// What a person needs to reach a browser share.
+///
+/// The address is the whole capability: anyone who reaches it from the first
+/// computer to open it can download, and nobody else can. Read it out loud, or
+/// draw it as a code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareTarget {
+    /// Address to type into a browser.
+    pub url: String,
+    /// How many files the page lists.
+    pub files: usize,
+    /// How long the address stays good.
+    pub expires_in: Duration,
 }
 
 /// What a person or policy decided about one offer.
@@ -815,6 +848,7 @@ impl Engine {
                 watch: Mutex::new(watch),
                 transfers: Mutex::new(HashMap::new()),
                 next_transfer: AtomicU64::new(1),
+                share: Mutex::new(None),
             }),
         })
     }
@@ -1135,10 +1169,124 @@ impl Engine {
         ids
     }
 
+    /// Offer files to a browser on this network.
+    ///
+    /// Binds [`SHARE_PORT`] for as long as the share lives. A share already
+    /// open is closed first: the person is looking at one address at a time,
+    /// and a second address they cannot see is worse than a replaced one.
+    ///
+    /// The listener is read-only by construction. Nothing a browser sends can
+    /// put a byte on this device; see [`BrowserShare`].
+    pub async fn open_share(&self, paths: Vec<PathBuf>) -> Result<ShareTarget, EngineError> {
+        if paths.is_empty() {
+            return Err(EngineError::NothingToSend);
+        }
+
+        // A file that cannot be read is reported before the old share is
+        // closed: a failed attempt should not take away an address that worked.
+        let files = |paths: &[PathBuf]| -> Result<Vec<ShareFile>, EngineError> {
+            Ok(paths
+                .iter()
+                .cloned()
+                .map(ShareFile::new)
+                .collect::<Result<Vec<_>, _>>()?)
+        };
+        let chosen = files(&paths)?;
+
+        self.close_share().await;
+
+        let share = match BrowserShare::open(
+            self.inner.info.alias.clone(),
+            chosen,
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, SHARE_PORT)),
+        )
+        .await
+        {
+            Err(ShareError::Bind { addr, source }) if source.kind() == ErrorKind::AddrInUse => {
+                // 47822 is tried first because it is what a person types from
+                // another screen, but something else holding it is no reason to
+                // refuse to share: the URL always names the port that worked.
+                log::warn!("{addr} is taken; opening the share on a free port instead");
+                BrowserShare::open(
+                    self.inner.info.alias.clone(),
+                    files(&paths)?,
+                    SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+                )
+                .await?
+            }
+            other => other?,
+        };
+        let target = ShareTarget {
+            url: share.url(),
+            files: share.files().len(),
+            expires_in: share.remaining(),
+        };
+        let deadline = Instant::now() + target.expires_in;
+
+        let (stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            if let Err(err) = share
+                .run_until(async move {
+                    let _ = stopped.await;
+                })
+                .await
+            {
+                log::warn!("browser share ended with an error: {err}");
+            }
+        });
+
+        *self.inner.share.lock().await = Some(ShareRunning {
+            url: target.url.clone(),
+            files: target.files,
+            deadline,
+            task,
+            stop,
+        });
+        log::info!(
+            "browser share open: {} file(s), {}",
+            target.files,
+            target.url
+        );
+        Ok(target)
+    }
+
+    /// Stop the browser share, if one is open. Does nothing otherwise.
+    pub async fn close_share(&self) {
+        let running = self.inner.share.lock().await.take();
+        if let Some(running) = running {
+            let _ = running.stop.send(());
+            let _ = tokio::time::timeout(STOP_TIMEOUT, running.task).await;
+            log::info!("browser share closed");
+        }
+    }
+
+    /// The share a browser could open right now, if any.
+    ///
+    /// A share whose time ran out, or whose browser posted its receipt, is
+    /// dropped here rather than reported: the address is already dead, and a
+    /// screen that keeps showing it is a lie.
+    pub async fn share(&self) -> Option<ShareTarget> {
+        let mut open = self.inner.share.lock().await;
+        let running = open.as_ref()?;
+        let left = running.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || running.task.is_finished() {
+            if let Some(finished) = open.take() {
+                let _ = finished.stop.send(());
+            }
+            return None;
+        }
+        Some(ShareTarget {
+            url: running.url.clone(),
+            files: running.files,
+            expires_in: left,
+        })
+    }
+
     /// Stop sending, stop discovering and close the listener.
     ///
     /// The engine is finished afterwards; start a new one to receive again.
     pub async fn stop(&self) {
+        self.close_share().await;
         for (_, running) in self.inner.transfers.lock().await.drain() {
             // Shutting down is not a user cancel: there is no window left to
             // send a `DELETE`, so the receiver sweeps the session.

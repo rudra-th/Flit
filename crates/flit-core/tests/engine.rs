@@ -718,3 +718,52 @@ async fn trust_saved_on_this_phone_still_skips_the_sheet() {
     std::fs::remove_dir_all(&second_root).ok();
     std::fs::remove_dir_all(&sender_root).ok();
 }
+
+/// A browser share is a capability written on the screen. It must exist while
+/// the screen says it does, survive being read twice, and stop being an address
+/// the moment the person stops it.
+#[tokio::test]
+async fn a_browser_share_lives_until_it_is_stopped() {
+    let (engine, root, _) = start_engine(61, "share").await;
+
+    assert!(matches!(
+        engine.open_share(Vec::new()).await,
+        Err(EngineError::NothingToSend)
+    ));
+    assert!(engine.share().await.is_none(), "nothing opened yet");
+
+    let file = root.join("notes.txt");
+    std::fs::write(&file, b"hello from the phone").unwrap();
+    let target = engine.open_share(vec![file]).await.expect("a share");
+
+    assert_eq!(target.files, 1);
+    assert!(
+        target.url.starts_with("http://"),
+        "{} is not an address a browser takes",
+        target.url
+    );
+    assert!(
+        target.url.contains("/r/"),
+        "{} carries no token",
+        target.url
+    );
+    assert!(
+        !target.expires_in.is_zero(),
+        "a share that lives for no time"
+    );
+
+    let read_again = engine.share().await.expect("still open");
+    assert_eq!(
+        read_again.url, target.url,
+        "reading the address must not change it"
+    );
+
+    engine.close_share().await;
+    assert!(
+        engine.share().await.is_none(),
+        "a stopped share must not still hand out its address"
+    );
+
+    engine.stop().await;
+    std::fs::remove_dir_all(&root).ok();
+}

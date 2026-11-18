@@ -44,7 +44,8 @@ mod targets;
 
 pub use engine::{
     DiscoveryState, EVENT_BUFFER, Engine, EngineConfig, EngineError, Event, ItemOutcome,
-    OFFER_TIMEOUT, OfferId, OfferOutcome, OfferSender, OfferedItem, PeerView, TransferId,
+    OFFER_TIMEOUT, OfferId, OfferOutcome, OfferSender, OfferedItem, PeerView, ShareTarget,
+    TransferId,
 };
 pub use targets::{CollectError, Collected, collect_targets};
 

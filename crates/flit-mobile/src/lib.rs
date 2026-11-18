@@ -14,7 +14,8 @@ use std::{
 
 use flit_api::{DeviceType, ItemKind};
 use flit_core::{
-    DiscoveryState, Engine, EngineConfig, Event, OfferId, OfferOutcome, TransferId, collect_targets,
+    DiscoveryState, Engine, EngineConfig, Event, OfferId, OfferOutcome, ShareTarget, TransferId,
+    collect_targets,
 };
 use flit_crypto::{IdentityFile, NameFile};
 use tokio::sync::broadcast::error::RecvError;
@@ -154,6 +155,20 @@ pub struct PeerInfo {
     pub device_type: String,
     /// `multicast`, `scan` or `manual`.
     pub source: String,
+}
+
+/// A browser share a person can read out to another device.
+///
+/// No token field: the address carries it, and splitting the two in the UI only
+/// invites showing a URL that is missing half of what makes it work.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ShareInfo {
+    /// The address to type into a browser.
+    pub url: String,
+    /// How many files the page lists.
+    pub files: u32,
+    /// Whole minutes left before the address stops working, rounded up.
+    pub minutes: u32,
 }
 
 /// The engine, held open by the app for as long as the screen lives.
@@ -415,6 +430,33 @@ impl MobileEngine {
         list_received(self.engine.root())
     }
 
+    /// Offer these files to a browser on the same network.
+    ///
+    /// The phone serves; the other computer only reads. Nothing is uploaded to
+    /// this phone, and nothing is installed on the computer. The share ends on
+    /// its own, on [`MobileEngine::close_share`], or when the browser says it
+    /// is done.
+    pub fn open_share(&self, paths: Vec<String>) -> Result<ShareInfo, MobileError> {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        self.runtime
+            .block_on(self.engine.open_share(paths))
+            .map(share_info)
+            .map_err(MobileError::start)
+    }
+
+    /// Stop the browser share, if one is open.
+    pub fn close_share(&self) {
+        self.runtime.block_on(self.engine.close_share());
+    }
+
+    /// The share a browser could open right now, if any.
+    ///
+    /// Call this when the screen comes back: a share that timed out while the
+    /// app was in the background must not still be shown with an address.
+    pub fn share(&self) -> Option<ShareInfo> {
+        self.runtime.block_on(self.engine.share()).map(share_info)
+    }
+
     /// Change the name other devices see, and return the cleaned form kept.
     ///
     /// The announce carries the name the receiver was started with, so the app
@@ -640,6 +682,20 @@ fn modified_secs(metadata: &std::fs::Metadata) -> u64 {
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// A browser share, flattened for Kotlin.
+///
+/// Minutes, not a deadline: the shell draws "about 8 minutes left", and a
+/// countdown that ticks once a second would need the engine to be polled for a
+/// number it cannot know exactly anyway.
+fn share_info(target: ShareTarget) -> ShareInfo {
+    let seconds = target.expires_in.as_secs();
+    ShareInfo {
+        url: target.url,
+        files: u32::try_from(target.files).unwrap_or(u32::MAX),
+        minutes: u32::try_from(seconds.div_ceil(60)).unwrap_or(u32::MAX),
+    }
 }
 
 /// The address another device should dial, not the `0.0.0.0` the listener binds.
