@@ -141,6 +141,18 @@ impl From<&ItemOutcome> for Item {
     }
 }
 
+/// One thing inside an offer, as the question about it shows it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Offered {
+    /// Name it would be saved under.
+    pub name: String,
+    /// Payload bytes, counting inline text.
+    pub bytes: u64,
+    /// True when it is text handed over in the manifest, not a streamed file.
+    pub text: bool,
+}
+
 /// One past send, as the history file stores it.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct HistoryEntry {

@@ -293,6 +293,46 @@ pub async fn cancel_transfer(shell: State<'_, Shell>, id: u64) -> Result<bool, S
     })
 }
 
+/// Answer the question a device is asking.
+///
+/// `accept` takes everything it offered or nothing at all: the desktop question
+/// is about the transfer, not a file picker. `remember` is honoured only when
+/// the sender proved a key, and only when the answer actually landed, so a tap
+/// that arrived too late grants nothing.
+#[tauri::command]
+pub async fn answer_offer(
+    shell: State<'_, Shell>,
+    id: u64,
+    accept: bool,
+    remember: bool,
+) -> Result<bool, String> {
+    Ok(shell.inner.answer(id, accept, remember).await)
+}
+
+/// Whether this computer accepts offers without asking.
+#[tauri::command]
+pub fn auto_accept(shell: State<'_, Shell>) -> bool {
+    shell.inner.policy().0
+}
+
+/// Accept every offer without asking, or stop doing that. Persisted.
+#[tauri::command]
+pub fn set_auto_accept(shell: State<'_, Shell>, enabled: bool) {
+    shell.inner.set_auto_accept(enabled);
+}
+
+/// The fingerprints this computer takes without asking, sorted.
+#[tauri::command]
+pub fn trusted_devices(shell: State<'_, Shell>) -> Vec<String> {
+    shell.inner.policy().1
+}
+
+/// Forget a trusted key. Returns whether it was trusted.
+#[tauri::command]
+pub fn forget_trusted(shell: State<'_, Shell>, fingerprint: String) -> bool {
+    shell.inner.forget(&fingerprint)
+}
+
 impl Check {
     fn new(
         id: &'static str,

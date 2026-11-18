@@ -13,12 +13,14 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use flit_core::{Engine, EngineConfig, Event, PeerView};
+use flit_api::ItemKind;
+use flit_core::{Engine, EngineConfig, Event, OfferId, OfferOutcome, PeerView};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    dto::{HistoryEntry, Item},
+    dto::{HistoryEntry, Item, Offered},
     events::{CHANNEL, EngineEvent},
 };
 
@@ -43,18 +45,20 @@ impl Shell {
         let store = flit_crypto::IdentityFile::default_path().map_err(|err| err.to_string())?;
         let identity = store.load_or_create().map_err(|err| err.to_string())?;
         let history_path = store.path().with_file_name("history.json");
+        let policy_path = store.path().with_file_name("consent.json");
         let name = flit_crypto::NameFile::beside(&store)
             .load_or_create()
             .map_err(|err| err.to_string())?;
 
-        // The desktop has no consent sheet yet, so it keeps the behaviour it had
-        // before offers existed: accept everything. The Android shell asks the
-        // person and remembers trusted devices; when the desktop grows a sheet,
-        // replace this with its own persisted policy. Installed in the config so
+        // The same two rules the phone follows: nothing is accepted without an
+        // answer unless the person turned that on, and "remember this device"
+        // is the only other way past the question. Installed in the config so
         // it is in force before the receiver binds and can be asked.
+        let policy = Policy::load(&policy_path);
         let config = EngineConfig {
             alias: name,
-            auto_accept: true,
+            auto_accept: policy.auto_accept,
+            trusted: policy.trusted.clone(),
             ..EngineConfig::default()
         };
         let engine = tauri::async_runtime::block_on(Engine::start(Arc::new(identity), config))
@@ -63,6 +67,9 @@ impl Shell {
         let inner = Arc::new(Inner {
             engine,
             data: Mutex::new(Data::load(history_path)),
+            policy: Mutex::new(policy),
+            policy_path,
+            offers: Mutex::new(HashMap::new()),
         });
 
         pump(Arc::clone(&inner), app.clone());
@@ -76,6 +83,58 @@ pub struct Inner {
     pub engine: Engine,
     /// Sends in flight and past sends.
     pub data: Mutex<Data>,
+    /// What this computer does when nothing answers an offer.
+    policy: Mutex<Policy>,
+    /// Where the policy is written, beside the identity.
+    policy_path: PathBuf,
+    /// Offers waiting for this window, by id.
+    ///
+    /// The engine owns the waiting; this is only what an answer needs once the
+    /// person gives one: which items, and which key may be remembered.
+    offers: Mutex<HashMap<u64, Pending>>,
+}
+
+/// One question on screen, from the shell's side.
+struct Pending {
+    /// Proven key, when the sender presented one. Trust is remembered under it
+    /// and never under a name.
+    fingerprint: Option<String>,
+    /// The sender's ids for everything it offered.
+    ids: Vec<String>,
+}
+
+/// What this computer does when another device asks to send something.
+///
+/// Two rules, the same ones the phone follows: a global switch, off by default,
+/// and a set of fingerprints the person chose to trust. A display name is never
+/// stored, because a name is a claim and a key is proof.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Policy {
+    /// Accept every offer without asking.
+    auto_accept: bool,
+    /// Fingerprints accepted on their own.
+    trusted: Vec<String>,
+}
+
+impl Policy {
+    /// Read the policy, or start with everything asked about.
+    ///
+    /// A file that cannot be read is not a reason to start in a state nobody
+    /// chose: the safe default is the one that asks.
+    fn load(path: &PathBuf) -> Self {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+                log::warn!("consent policy at {} could not be read: {err}", path.display());
+                Self::default()
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(err) => {
+                log::warn!("consent policy at {} could not be read: {err}", path.display());
+                Self::default()
+            }
+        }
+    }
 }
 
 impl Inner {
@@ -85,6 +144,95 @@ impl Inner {
     /// and the history vector are only ever replaced, never half-mutated.
     pub fn data(&self) -> MutexGuard<'_, Data> {
         self.data.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    /// Whether offers are accepted without asking, and which keys are trusted.
+    pub fn policy(&self) -> (bool, Vec<String>) {
+        let policy = self.lock_policy();
+        (policy.auto_accept, policy.trusted.clone())
+    }
+
+    /// Turn "accept without asking" on or off, and write it down.
+    ///
+    /// The engine is told after the file is written, so a crash in between
+    /// leaves a policy on disk that the next start honours, not one the running
+    /// receiver has already forgotten.
+    pub fn set_auto_accept(&self, enabled: bool) {
+        let (auto, trusted) = {
+            let mut policy = self.lock_policy();
+            policy.auto_accept = enabled;
+            write_policy(&self.policy_path, &policy);
+            (policy.auto_accept, policy.trusted.clone())
+        };
+        self.engine.set_auto_accept(auto, trusted);
+    }
+
+    /// Remember a key the person chose to trust, and write it down.
+    pub fn trust(&self, fingerprint: String) {
+        let fingerprint = fingerprint.trim().to_ascii_lowercase();
+        if fingerprint.is_empty() {
+            return;
+        }
+        let (auto, trusted) = {
+            let mut policy = self.lock_policy();
+            if !policy.trusted.contains(&fingerprint) {
+                policy.trusted.push(fingerprint);
+                policy.trusted.sort();
+            }
+            write_policy(&self.policy_path, &policy);
+            (policy.auto_accept, policy.trusted.clone())
+        };
+        self.engine.set_auto_accept(auto, trusted);
+    }
+
+    /// Forget a key. Returns whether it was trusted to begin with.
+    pub fn forget(&self, fingerprint: &str) -> bool {
+        let mut policy = self.lock_policy();
+        let before = policy.trusted.len();
+        policy
+            .trusted
+            .retain(|known| !known.eq_ignore_ascii_case(fingerprint.trim()));
+        if policy.trusted.len() == before {
+            return false;
+        }
+        let auto = policy.auto_accept;
+        let trusted = policy.trusted.clone();
+        write_policy(&self.policy_path, &policy);
+        drop(policy);
+        self.engine.set_auto_accept(auto, trusted);
+        true
+    }
+
+    /// Answer the question on screen. False when it had already closed.
+    pub async fn answer(&self, id: u64, accept: bool, remember: bool) -> bool {
+        let Some(pending) = self.take_offer(id) else {
+            // A tap that lands after the sender gave up is not an answer, and
+            // must not leave a device trusted behind it.
+            return false;
+        };
+        let ids = if accept { pending.ids } else { Vec::new() };
+        let trusting = accept && remember && pending.fingerprint.is_some();
+        let answered = self
+            .engine
+            .answer_offer(OfferId::from_raw(id), ids, trusting)
+            .await;
+        if answered {
+            if let Some(fingerprint) = pending.fingerprint.filter(|_| trusting) {
+                self.trust(fingerprint);
+            }
+        }
+        answered
+    }
+
+    fn take_offer(&self, id: u64) -> Option<Pending> {
+        self.offers
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(&id)
+    }
+
+    fn lock_policy(&self) -> MutexGuard<'_, Policy> {
+        self.policy.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     /// Turn one engine event into a window event, recording history on the way.
@@ -156,10 +304,77 @@ impl Inner {
                 self.data().close(id, Ending::Cancelled);
                 Some(EngineEvent::TransferCancelled { id })
             }
-            // Offers never reach the window: the desktop accepts them through
-            // its policy above, and there is no sheet to draw.
-            Event::IncomingOffer { .. } | Event::OfferClosed { .. } => None,
+            Event::IncomingOffer {
+                id,
+                sender,
+                items,
+                bytes,
+            } => {
+                let id = id.as_u64();
+                // Registered before the window hears about it: a fast tap must
+                // find what it is answering.
+                self.offers
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .insert(
+                        id,
+                        Pending {
+                            fingerprint: sender.fingerprint.clone(),
+                            ids: items.iter().map(|item| item.id.clone()).collect(),
+                        },
+                    );
+                Some(EngineEvent::IncomingOffer {
+                    id,
+                    sender: sender.alias.clone(),
+                    fingerprint: sender.fingerprint.clone().unwrap_or_default(),
+                    items: items
+                        .iter()
+                        .map(|item| Offered {
+                            name: item.name.clone(),
+                            bytes: item.size,
+                            text: item.kind == ItemKind::Text,
+                        })
+                        .collect(),
+                    bytes,
+                })
+            }
+            Event::OfferClosed { id, outcome } => {
+                // Dropped here too: an offer the policy answered never reached
+                // this window, and one that timed out under a finger must not
+                // leave a question that can still be answered.
+                self.take_offer(id.as_u64());
+                Some(EngineEvent::OfferClosed {
+                    id: id.as_u64(),
+                    outcome: outcome_name(outcome).to_string(),
+                })
+            }
         }
+    }
+}
+
+/// How an outcome reads in the window, in the spelling TypeScript switches on.
+fn outcome_name(outcome: OfferOutcome) -> &'static str {
+    match outcome {
+        OfferOutcome::Accepted => "accepted",
+        OfferOutcome::Declined => "declined",
+        OfferOutcome::TimedOut => "timedOut",
+    }
+}
+
+/// Write the policy beside the identity.
+///
+/// A policy that cannot be written is logged rather than raised: the choice is
+/// already in force for this run, and a dialog over it would not help the
+/// transfer that is waiting.
+fn write_policy(path: &PathBuf, policy: &Policy) {
+    let Ok(bytes) = serde_json::to_vec_pretty(policy) else {
+        return;
+    };
+    if let Err(err) = std::fs::write(path, bytes) {
+        log::warn!(
+            "consent policy at {} could not be written: {err}",
+            path.display()
+        );
     }
 }
 
@@ -363,6 +578,15 @@ fn pump(inner: Arc<Inner>, app: AppHandle) {
             match events.recv().await {
                 Ok(event) => {
                     if let Some(ready) = inner.observe(event).await {
+                        // A question with no window in front is a question
+                        // nobody answers, and an unanswered offer becomes a
+                        // decline when it times out. Bring the window back for
+                        // the one event that is waiting on a person; an offer
+                        // the policy settled on its own never asks, so this
+                        // does not interrupt anything.
+                        if matches!(&ready, EngineEvent::IncomingOffer { .. }) {
+                            crate::tray::reveal(&app);
+                        }
                         // A closed window is not an error: the engine keeps
                         // running in the tray until the user quits.
                         let _ = app.emit(CHANNEL, ready);

@@ -15,6 +15,7 @@ import type {
   HistoryEntry,
   ItemOutcome,
   NetInterface,
+  Offer,
   Peer,
   Status,
   TrayEntry,
@@ -179,6 +180,12 @@ function lanesWanted(): boolean {
   return new URLSearchParams(location.search).get("demo") === "lanes";
 }
 
+/** `?demo=offer` shows the question a device asks before it can send. */
+function offerWanted(): boolean {
+  if (typeof location === "undefined") return false;
+  return new URLSearchParams(location.search).get("demo") === "offer";
+}
+
 interface Runner {
   timer: number;
   cancelled: boolean;
@@ -190,6 +197,10 @@ export function createDemo(): FlitBridge {
   const history = seedHistory();
   const runners = new Map<number, Runner>();
   let nextId = 1;
+  /** Mirrors the shell's consent policy, so the panel behaves like it will. */
+  const policy = { autoAccept: false, trusted: [] as string[] };
+  /** The question on screen, if one is waiting for an answer. */
+  let offer: Offer | null = null;
 
   const emit = (event: EngineEvent) => {
     for (const listener of listeners) listener(event);
@@ -471,11 +482,75 @@ export function createDemo(): FlitBridge {
       ];
     },
 
+    async answerOffer(id, accept, remember) {
+      const waiting = offer;
+      if (waiting === null || waiting.id !== id) return false;
+      offer = null;
+      if (accept && remember && waiting.fingerprint !== "") {
+        policy.trusted = [...new Set([...policy.trusted, waiting.fingerprint])]
+          .sort();
+      }
+      emit({
+        kind: "offerClosed",
+        id,
+        outcome: accept ? "accepted" : "declined",
+      });
+      return true;
+    },
+
+    async autoAccept() {
+      return policy.autoAccept;
+    },
+
+    async setAutoAccept(enabled) {
+      policy.autoAccept = enabled;
+    },
+
+    async trustedDevices() {
+      return [...policy.trusted];
+    },
+
+    async forgetTrusted(fingerprint) {
+      const before = policy.trusted.length;
+      policy.trusted = policy.trusted.filter((key) => key !== fingerprint);
+      return policy.trusted.length !== before;
+    },
+
     async subscribe(handler) {
       listeners.add(handler);
       if (!seeded) {
         seeded = true;
         window.setTimeout(seedLanes, 120);
+      }
+      if (offerWanted() && offer === null) {
+        const items = [
+          { name: "Q3 handover/floorplan.pdf", bytes: 2_480_000, text: false },
+          { name: "Q3 handover/wall-elevation.png", bytes: 14_200_000, text: false },
+          { name: "Q3 handover/site-photo.jpg", bytes: 6_800_000, text: false },
+          { name: "Q3 handover/schedule.csv", bytes: 42_000, text: false },
+          { name: "Q3 handover/notes.md", bytes: 8_900, text: false },
+          { name: "handover-link.txt", bytes: 96, text: true },
+        ];
+        const waiting: Offer = {
+          id: 77,
+          sender: PEERS[0].alias,
+          fingerprint: PEERS[0].fingerprint,
+          items,
+          bytes: items.reduce((sum, item) => sum + item.bytes, 0),
+        };
+        offer = waiting;
+        window.setTimeout(
+          () =>
+            emit({
+              kind: "incomingOffer",
+              id: waiting.id,
+              sender: waiting.sender,
+              fingerprint: waiting.fingerprint,
+              items: waiting.items,
+              bytes: waiting.bytes,
+            }),
+          900,
+        );
       }
       return () => listeners.delete(handler);
     },

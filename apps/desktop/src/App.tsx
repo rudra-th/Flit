@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DropIcon } from "./components/Icons";
+import { ConsentDialog } from "./components/ConsentDialog";
 import { TopBar, type View } from "./components/TopBar";
 import { getBridge, watchDrag, type FlitBridge } from "./lib/bridge";
 import { hostPart } from "./lib/format";
@@ -9,7 +10,9 @@ import type {
   EngineEvent,
   HistoryEntry,
   ItemOutcome,
+  Offer,
   Peer,
+  ReceivingPolicy,
   Status,
   Transfer,
   TrayEntry,
@@ -30,6 +33,14 @@ interface Toast {
   tone: "ok" | "bad";
 }
 
+/** The receiving policy is two calls on the bridge; read them together so a
+ * half-read state is never drawn. */
+function readPolicy(live: FlitBridge): Promise<ReceivingPolicy> {
+  return Promise.all([live.autoAccept(), live.trustedDevices()]).then(
+    ([autoAccept, trusted]) => ({ autoAccept, trusted }),
+  );
+}
+
 export default function App() {
   const [bridge, setBridge] = useState<FlitBridge | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
@@ -42,6 +53,13 @@ export default function App() {
   const [view, setView] = useState<View>(viewFromHash);
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  /** The question on screen, if a device is waiting for an answer. */
+  const [offer, setOffer] = useState<Offer | null>(null);
+  /** What this computer does when an offer arrives with nobody deciding. */
+  const [policy, setPolicy] = useState<ReceivingPolicy>({
+    autoAccept: false,
+    trusted: [],
+  });
 
   // Event handlers run outside React's render, so they read live values from
   // refs instead of from a closure captured at subscribe time.
@@ -96,14 +114,16 @@ export default function App() {
   const reload = useCallback(async () => {
     const live = bridgeRef.current;
     if (!live) return;
-    const [list, sends, checks] = await Promise.all([
+    const [list, sends, checks, receiving] = await Promise.all([
       live.peers(),
       live.history(),
       live.doctor(),
+      readPolicy(live),
     ]);
     setPeers(Object.fromEntries(list.map((peer) => [peer.deviceId, peer])));
     setHistory(sends);
     setDoctor(checks);
+    setPolicy(receiving);
   }, []);
 
   const addPaths = useCallback(
@@ -192,6 +212,21 @@ export default function App() {
             "Multicast is blocked on this network, so devices are found by a scan. Receiving still works.",
             "bad",
           );
+          return;
+
+        case "incomingOffer":
+          setOffer({
+            id: event.id,
+            sender: event.sender,
+            fingerprint: event.fingerprint,
+            items: event.items,
+            bytes: event.bytes,
+          });
+          return;
+
+        case "offerClosed":
+          // Only the question it names: a later one may already be up.
+          setOffer((current) => (current?.id === event.id ? null : current));
           return;
 
         case "transferStarted": {
@@ -355,11 +390,12 @@ export default function App() {
         if (disposed) return;
         setBridge(live);
 
-        const [me, list, sends, checks] = await Promise.all([
+        const [me, list, sends, checks, receiving] = await Promise.all([
           live.status(),
           live.peers(),
           live.history(),
           live.doctor(),
+          readPolicy(live),
         ]);
         if (disposed) return;
 
@@ -367,6 +403,7 @@ export default function App() {
         setPeers(Object.fromEntries(list.map((peer) => [peer.deviceId, peer])));
         setHistory(sends);
         setDoctor(checks);
+        setPolicy(receiving);
 
         cleanups.push(await live.subscribe(handleEvent));
         cleanups.push(
@@ -528,6 +565,83 @@ export default function App() {
     })();
   }, []);
 
+  /**
+   * Answer the question on screen.
+   *
+   * It comes down first: the sender is blocked until this returns, and a person
+   * who has already decided should not sit in front of a dead question while a
+   * round trip finishes.
+   */
+  const answerOffer = useCallback(
+    async (id: number, accept: boolean, remember: boolean) => {
+      const live = bridgeRef.current;
+      setOffer((current) => (current?.id === id ? null : current));
+      if (!live) return;
+      try {
+        const answered = await live.answerOffer(id, accept, remember);
+        if (!answered) {
+          say("That transfer already closed.", "bad");
+        } else if (accept && remember) {
+          // The shell wrote the key before answering, but the panel was read
+          // separately; refresh it so the new row is there when the question
+          // comes down, not a reload later.
+          void live
+            .trustedDevices()
+            .then((trusted) => setPolicy((current) => ({ ...current, trusted })))
+            .catch(() => undefined);
+          say("Accepted, and this device is trusted from now on.");
+        }
+      } catch (error) {
+        say(describe(error), "bad");
+      }
+    },
+    [say],
+  );
+
+  /**
+   * Turn "accept every device" on or off.
+   *
+   * Drawn at once and undone if the shell refuses, because the switch is the
+   * only feedback a person gets and waiting on a round trip makes it feel
+   * broken.
+   */
+  const setAutoAccept = useCallback(
+    (enabled: boolean) => {
+      const live = bridgeRef.current;
+      if (!live) return;
+      setPolicy((current) => ({ ...current, autoAccept: enabled }));
+      void live
+        .setAutoAccept(enabled)
+        .catch((error) => {
+          setPolicy((current) => ({ ...current, autoAccept: !enabled }));
+          say(describe(error), "bad");
+        });
+    },
+    [say],
+  );
+
+  /** Forget a trusted key. The row goes when the shell says it did. */
+  const forgetTrusted = useCallback(
+    (fingerprint: string) => {
+      const live = bridgeRef.current;
+      if (!live) return;
+      void (async () => {
+        try {
+          const forgotten = await live.forgetTrusted(fingerprint);
+          if (!forgotten) return;
+          setPolicy((current) => ({
+            ...current,
+            trusted: current.trusted.filter((key) => key !== fingerprint),
+          }));
+          say("That device will be asked again.");
+        } catch (error) {
+          say(describe(error), "bad");
+        }
+      })();
+    },
+    [say],
+  );
+
   // How the tray names where this is going: one name, or a count.
   const chosen = peerList.filter((peer) => selected.includes(peer.deviceId));
   const targetName =
@@ -593,7 +707,14 @@ export default function App() {
         ) : view === "doctor" ? (
           <DoctorView doctor={doctor} onRefresh={refreshDoctor} />
         ) : (
-          <DeviceView status={status} onRename={rename} />
+          <DeviceView
+            status={status}
+            policy={policy}
+            peers={peerList}
+            onRename={rename}
+            onAutoAccept={setAutoAccept}
+            onForget={forgetTrusted}
+          />
         )}
       </main>
 
@@ -616,6 +737,16 @@ export default function App() {
         <div className="toast" data-tone={toast.tone} role="status">
           {toast.text}
         </div>
+      ) : null}
+
+      {offer !== null ? (
+        <ConsentDialog
+          key={offer.id}
+          offer={offer}
+          onAnswer={(accept, remember) => {
+            void answerOffer(offer.id, accept, remember);
+          }}
+        />
       ) : null}
     </div>
   );

@@ -50,7 +50,8 @@ that case the **announce carries the real port** and peers must use it. Clients
 never assume 47821; they use the advertised value.
 
 Port 47822 is bound only while a browser share is open and never accepts
-uploads. See §8.
+uploads. See §8. Like the TLS listener, it falls back to an ephemeral port when
+47822 is taken, and the address shown to the person carries the real port.
 
 ---
 
@@ -568,8 +569,9 @@ partially applied.
 
 A borrowed computer cannot install anything, and a browser cannot trust a
 self-signed certificate without a warning. So the **sending** device serves the
-share over plain HTTP on port 47822, and the bytes flow one way: the browser
-downloads files the person chose to give it.
+share over plain HTTP, on port 47822 when it is free and on an ephemeral port
+otherwise, and the bytes flow one way: the browser downloads files the person
+chose to give it. The address shown always names the port that answered.
 
 - The listener is bound only while a share is open, on the device that has the
   files. It is never bound at rest.

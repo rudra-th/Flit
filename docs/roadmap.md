@@ -28,28 +28,34 @@ pocket.
 
 **The browser page is served by the sender.** A person who wants to hand files
 to a borrowed computer picks them as usual and chooses to open them in a
-browser. The phone binds port 47822, shows a short address, and the computer
-downloads from it. Nothing is installed on the computer, and nothing is
-uploaded to the phone.
+browser. The phone serves them on port 47822 and shows a short address, and the
+computer downloads from it. Nothing is installed on the computer, and nothing is
+uploaded to the phone: the bytes go straight from the phone's disk to the
+browser.
 
-The page shows that address as a code as well as text, so a device with a
-camera can scan it instead of typing. The code is drawn by the sender, because
-the sender is the side that already has the files. A scanner in the app would
-only be needed if the phone were the one receiving from a screen, which is the
-opposite direction; v1 does not include one.
+Port 47822 is tried first because it is the one a person may have seen on
+another screen, but it is not a requirement. If something else already holds
+it, the share opens on a free port and the address shows that port; the URL is
+the whole instruction, so the fallback costs the person nothing.
 
-## Order
+The address is set in mono and never truncated, because half a URL read out
+loud is a support call. A scannable code is a later addition: v1 keeps the
+address readable and copyable, and a scanner in the app would only matter if
+the phone were receiving from a screen, which is the opposite direction.
 
-1. **Consent on hardware, before anything ships.** The matrix in
-   `docs/verification.md` has to pass on two real phones. It is the gate, not a
-   later chore, and it can run in parallel with the work below because the
-   share path never touches consent.
-2. **The browser share, sender side.** The token lifecycle and read-only
-   listener from §8, the page, and downloads that resume. The page loads no
-   script and makes no third-party request, so it works on a network with no
-   internet.
-3. **The share UI.** Pick files as usual, choose "open in a browser", show the
-   address and the code, and stop the share when the person is done.
+## Where it stands
+
+1. **Consent.** The engine, the sheet, the saved policy and the trusted list are
+   in place on the phone and on the desktop. The matrix in
+   `docs/verification.md` is the gate and has been run through the identity
+   cases on one phone; the remaining cases need a second LAN address and a
+   second sender.
+2. **The browser share.** The token lifecycle and read-only listener from §8,
+   the page, and downloads that resume are in place. The page loads no script
+   and makes no third-party request, so it works on a network with no internet.
+3. **The share UI.** The phone offers "Share with a browser", shows the address
+   and when the share ends, copies it, and stops it on request. The desktop has
+   no share UI yet; its shell is the next shell to grow one.
 
 ## Not planned
 

@@ -48,7 +48,7 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
 }
 
 /// Bring the window back from the tray.
-fn reveal(app: &AppHandle) {
+pub(crate) fn reveal(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();

@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use crate::dto::{Item, Peer};
+use crate::dto::{Item, Offered, Peer};
 
 /// The event channel. A constant so the shell and the UI cannot disagree.
 pub const CHANNEL: &str = "flit://event";
@@ -33,6 +33,27 @@ pub enum EngineEvent {
     DiscoveryUnavailable {
         /// Why, in words a support issue can quote.
         reason: String,
+    },
+    /// Another device is asking to send something, and is waiting for an
+    /// answer. Only sent when the policy did not answer on its own.
+    IncomingOffer {
+        /// Which question, for the answer.
+        id: u64,
+        /// The name it claims. Never proof of anything.
+        sender: String,
+        /// The key it proved, or empty when it proved none.
+        fingerprint: String,
+        /// What it wants to send, in order.
+        items: Vec<Offered>,
+        /// Total payload bytes.
+        bytes: u64,
+    },
+    /// An incoming offer reached a final answer, without this window giving it.
+    OfferClosed {
+        /// Which question.
+        id: u64,
+        /// `accepted`, `declined` or `timedOut`, in that spelling.
+        outcome: String,
     },
     /// A send was handed to the network.
     TransferStarted {

@@ -29,12 +29,40 @@ export interface Status {
   discovery: DiscoveryState;
 }
 
+/** What this computer does when another device asks to send something.
+ *
+ * Off is the default, and trust is always a fingerprint: a name is a claim, a
+ * key is proof. Mirrors `Policy` in `src-tauri/src/state.rs`. */
+export interface ReceivingPolicy {
+  autoAccept: boolean;
+  trusted: string[];
+}
+
 export interface ItemOutcome {
   path: string;
   name: string;
   savedAs: string | null;
   bytes: number;
   error: string | null;
+}
+
+/** One thing a device wants to send, as the question about it shows it. */
+export interface Offered {
+  name: string;
+  bytes: number;
+  /** True when it lands as text handed over in the manifest, not a file. */
+  text: boolean;
+}
+
+/** A device asking to send something, and waiting for an answer. */
+export interface Offer {
+  id: number;
+  /** The name it claims. Never proof of anything. */
+  sender: string;
+  /** The key it proved, or empty when it proved none. */
+  fingerprint: string;
+  items: Offered[];
+  bytes: number;
 }
 
 export interface HistoryEntry {
@@ -88,6 +116,15 @@ export type EngineEvent =
   | { kind: "peerSeen"; peer: Peer }
   | { kind: "peerLost"; deviceId: string }
   | { kind: "discoveryUnavailable"; reason: string }
+  | {
+      kind: "incomingOffer";
+      id: number;
+      sender: string;
+      fingerprint: string;
+      items: Offered[];
+      bytes: number;
+    }
+  | { kind: "offerClosed"; id: number; outcome: "accepted" | "declined" | "timedOut" }
   | { kind: "transferStarted"; id: number; label: string; files: number; bytes: number; peer: string }
   | {
       kind: "transferProgress";

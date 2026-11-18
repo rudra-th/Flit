@@ -38,6 +38,11 @@ fn main() {
             commands::send_to_address,
             commands::cancel_transfer,
             commands::read_clipboard,
+            commands::answer_offer,
+            commands::auto_accept,
+            commands::set_auto_accept,
+            commands::trusted_devices,
+            commands::forget_trusted,
         ])
         .setup(|app| {
             match Shell::start(app.handle()) {

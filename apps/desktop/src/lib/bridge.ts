@@ -38,6 +38,12 @@ export interface FlitBridge {
   readClipboard(): Promise<string>;
   cancel(id: number): Promise<boolean>;
   pickFiles(): Promise<string[]>;
+  /** Answer the question a device is asking. False when it already closed. */
+  answerOffer(id: number, accept: boolean, remember: boolean): Promise<boolean>;
+  autoAccept(): Promise<boolean>;
+  setAutoAccept(enabled: boolean): Promise<void>;
+  trustedDevices(): Promise<string[]>;
+  forgetTrusted(fingerprint: string): Promise<boolean>;
   subscribe(handler: (event: EngineEvent) => void): Promise<() => void>;
 }
 
@@ -68,6 +74,13 @@ const shell: FlitBridge = {
     invoke<number>("send_to_address", { addr, fingerprint, paths }),
   readClipboard: () => invoke<string>("read_clipboard"),
   cancel: (id) => invoke<boolean>("cancel_transfer", { id }),
+  answerOffer: (id, accept, remember) =>
+    invoke<boolean>("answer_offer", { id, accept, remember }),
+  autoAccept: () => invoke<boolean>("auto_accept"),
+  setAutoAccept: (enabled) => invoke<void>("set_auto_accept", { enabled }),
+  trustedDevices: () => invoke<string[]>("trusted_devices"),
+  forgetTrusted: (fingerprint) =>
+    invoke<boolean>("forget_trusted", { fingerprint }),
   async pickFiles() {
     const picked = await open({
       multiple: true,

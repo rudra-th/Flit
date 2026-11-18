@@ -54,3 +54,18 @@ explained rather than guessed at: the policy line on start and on every change
 ("consent policy: auto-accept …, N trusted device(s)"), the two policy paths
 separately, adoption of an open session, and trust being granted only after an
 answer was delivered.
+
+## The desktop
+
+The desktop shell runs the same engine and the same two rules, with a dialog
+instead of a sheet. What to check once, on Windows:
+
+- With the window hidden in the tray, an offer brings it back to the front.
+  Without that, nobody would answer and the offer would time out.
+- "Accept every device" survives a restart, and so does the trusted list
+  (`consent.json`, beside the identity).
+- A trusted row shows the device's current name and its key; Forget makes the
+  next send ask again.
+- Escape and a click outside the dialog both decline, and a late answer says
+  the transfer already closed.
+

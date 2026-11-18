@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 
 import { CopyButton } from "../components/CopyButton";
 import { shortFingerprint } from "../lib/format";
-import type { Status } from "../lib/types";
+import type { Peer, ReceivingPolicy, Status } from "../lib/types";
 
 /** Longest name the shell will announce or a peer list can show. */
 const MAX_NAME = 32;
@@ -114,14 +114,112 @@ function NameField({
   );
 }
 
+/** The two rules receiving follows: one switch, and the keys the person chose
+ * to trust. Off is the default and it is the honest one — a file that lands
+ * cannot be taken back from here. */
+function ReceivingPanel({
+  policy,
+  peers,
+  onAutoAccept,
+  onForget,
+}: {
+  policy: ReceivingPolicy;
+  peers: Peer[];
+  onAutoAccept: (enabled: boolean) => void;
+  onForget: (fingerprint: string) => void;
+}) {
+  const trusted = policy.trusted;
+
+  return (
+    <section className="panel receiving" aria-label="Receiving">
+      <div className="panel-head">
+        <span className="panel-title">Receiving</span>
+        <span className="panel-meta">
+          {policy.autoAccept
+            ? "accepts every device"
+            : trusted.length > 0
+              ? `asks first · ${trusted.length} trusted`
+              : "asks first"}
+        </span>
+      </div>
+
+      <div className="receiving-switch">
+        <div className="receiving-copy">
+          <strong>Accept every device without asking</strong>
+          <p>
+            Off is the default. While it is off, Flit asks before each transfer
+            except for the devices below. A PIN is still checked.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={policy.autoAccept}
+          aria-label="Accept every device without asking"
+          className="switch"
+          onClick={() => onAutoAccept(!policy.autoAccept)}
+        >
+          <span className="switch-knob" aria-hidden />
+        </button>
+      </div>
+
+      <div className="receiving-trusted">
+        <span className="receiving-label">Trusted devices</span>
+        {trusted.length === 0 ? (
+          <p className="receiving-none">
+            None yet. Tick &ldquo;Always accept from this device&rdquo; on a
+            transfer to add one.
+          </p>
+        ) : (
+          <ul className="trusted">
+            {trusted.map((fingerprint) => {
+              // A live peer name is the current one, which is easier to
+              // recognise than a key and grants nothing on its own.
+              const live = peers.find(
+                (peer) =>
+                  peer.fingerprint.toLowerCase() === fingerprint.toLowerCase(),
+              );
+              return (
+                <li key={fingerprint}>
+                  <span className="trusted-name">
+                    {live?.alias ?? "Trusted device"}
+                  </span>
+                  <span className="trusted-key" title={fingerprint}>
+                    {shortFingerprint(fingerprint)}&hellip;
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-quiet"
+                    onClick={() => onForget(fingerprint)}
+                  >
+                    Forget
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /** Who this device is to everyone else: the name they see, the fingerprint
  * they pin, and where it answers. */
 export function DeviceView({
   status,
+  policy,
+  peers,
   onRename,
+  onAutoAccept,
+  onForget,
 }: {
   status: Status | null;
+  policy: ReceivingPolicy;
+  peers: Peer[];
   onRename: (name: string) => Promise<void>;
+  onAutoAccept: (enabled: boolean) => void;
+  onForget: (fingerprint: string) => void;
 }) {
   const discovery =
     status === null
@@ -190,6 +288,13 @@ export function DeviceView({
           </p>
         </aside>
       </div>
+
+      <ReceivingPanel
+        policy={policy}
+        peers={peers}
+        onAutoAccept={onAutoAccept}
+        onForget={onForget}
+      />
 
       <p className="foot-note">
         Flit keeps running in the tray when the window is closed, so this device
