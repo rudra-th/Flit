@@ -1507,20 +1507,27 @@ private fun OfferSheet(
         shape = RoundedCornerShape(24.dp),
         containerColor = colors.card,
         title = {
-            Text(
-                text = "${offer.alias} wants to send",
-                style = MaterialTheme.typography.titleMedium,
-            )
-        },
-        text = {
+            // Who is asking, in one line, with the size of the ask under it.
+            // The alias is the only thing the person can recognise, so it gets
+            // the line to itself instead of sharing it with a verb.
             Column {
                 Text(
-                    text = (if (offer.items.size == 1) "1 item" else
-                        "${offer.items.size} items") + " \u00b7 " + size,
+                    text = offer.alias,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "wants to send " +
+                        (if (offer.items.size == 1) "1 item" else "${offer.items.size} items") +
+                        " \u00b7 " + size,
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.ink3,
                 )
-                Spacer(Modifier.height(10.dp))
+            }
+        },
+        text = {
+            Column {
                 shown.forEach { item ->
                     Row(
                         modifier = Modifier
@@ -1535,12 +1542,19 @@ private fun OfferSheet(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            Text(
-                                text = (if (item.kind == "text") "Text" else
-                                    Formatter.formatShortFileSize(context, item.size.toLong())),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.ink3,
-                            )
+                            // A single file's size is already in the title; only
+                            // a list needs it per row.
+                            if (offer.items.size > 1 || item.kind == "text") {
+                                Text(
+                                    text = (if (item.kind == "text") "Text" else
+                                        Formatter.formatShortFileSize(
+                                            context,
+                                            item.size.toLong(),
+                                        )),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.ink3,
+                                )
+                            }
                         }
                     }
                 }
@@ -1551,14 +1565,22 @@ private fun OfferSheet(
                         color = colors.ink3,
                     )
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(12.dp))
                 if (canTrust) {
-                    Text(
-                        text = "from " + shortFingerprint(offer.fingerprint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.ink3,
-                        fontFamily = FontFamily.Monospace,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "from",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.ink3,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = shortFingerprint(offer.fingerprint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.ink2,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
                 } else {
                     Text(
                         text = "This sender did not prove an identity, so this phone " +
@@ -1567,45 +1589,56 @@ private fun OfferSheet(
                         color = colors.ink3,
                     )
                 }
+                if (canTrust) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { remember = !remember }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = remember,
+                            onCheckedChange = { remember = it },
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "Always accept from this device",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
                 if (!fits) {
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = "Not enough space on this phone for $size.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                if (canTrust) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { remember = !remember }
-                            .padding(top = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(
-                            checked = remember,
-                            onCheckedChange = null,
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = "Always accept from this device",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                }
             }
         },
         confirmButton = {
-            TextButton(
+            // Accept is the one thing the sheet is for, so it is the only
+            // filled control on it. Decline is a plain word, not a rival.
+            Button(
                 enabled = fits && offer.items.isNotEmpty(),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                 onClick = { onAccept(offer.items.map { it.id }, remember) },
             ) {
-                Text("Accept")
+                Text("Accept", style = MaterialTheme.typography.labelMedium)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDecline) { Text("Decline") }
+            TextButton(onClick = onDecline) {
+                Text("Decline", color = colors.ink2)
+            }
         },
     )
 }
