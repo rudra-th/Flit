@@ -270,6 +270,17 @@ fn item_size(item: &ManifestItem) -> u64 {
     }
 }
 
+/// Why a listen port could not be bound even though nobody is using it.
+///
+/// Windows reports a port reserved by a driver (a VPN's NAT pool, for one) as
+/// `PermissionDenied`, not as an occupied port; both mean "try somewhere else".
+fn is_port_unavailable(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+    )
+}
+
 /// Something a UI may want to show. Every variant is cheap to clone.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -743,7 +754,24 @@ impl Engine {
         };
         server_config = server_config.with_offer_gate(gate);
 
-        let server = Server::bind(&identity, server_config).await?;
+        // A fixed port is a convenience, not a requirement. Something else may
+        // hold 47821, and on Windows a VPN driver can reserve a whole range of
+        // ports for itself and refuse every bind inside it. Either way the
+        // person cannot see or fix the cause, so the receiver asks for a free
+        // port instead: the announce carries whichever port was bound, and a
+        // typed address shows it. The only port worth refusing is one that was
+        // asked for explicitly, so this retries once and only for a busy port.
+        let server = match Server::bind(&identity, server_config.clone()).await {
+            Ok(server) => server,
+            Err(ServerError::Bind { addr, source })
+                if addr.port() != 0 && is_port_unavailable(&source) =>
+            {
+                log::warn!("{addr} is unavailable ({source}); binding a free port instead");
+                let retry = server_config.with_bind(SocketAddr::from((addr.ip(), 0)));
+                Server::bind(&identity, retry).await?
+            }
+            Err(err) => return Err(err.into()),
+        };
         let info = server.info().clone();
         let addr = server.local_addr();
         let root = server.root().to_path_buf();

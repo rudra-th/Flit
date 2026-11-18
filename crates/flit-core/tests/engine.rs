@@ -782,3 +782,37 @@ async fn a_browser_share_lives_until_it_is_stopped() {
     engine.stop().await;
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// A busy default port must not stop Flit from running.
+///
+/// Windows can reserve a range of ports for a driver, and the engine sees the
+/// same "unavailable" answer as when another program holds the port. The
+/// receiver asks for a free port instead, and the announce carries the one it
+/// got, so a nearby device finds it and a typed address shows it.
+#[tokio::test]
+async fn a_taken_port_does_not_stop_the_receiver() {
+    let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a port to hold");
+    let port = occupied.local_addr().unwrap().port();
+
+    let identity = Arc::new(Identity::from_secret_bytes([91; 32]));
+    let root = scratch("port-fallback");
+    let engine = Engine::start(
+        Arc::clone(&identity),
+        config(root.clone(), SocketAddr::from(([127, 0, 0, 1], port))),
+    )
+    .await
+    .expect("the receiver must start on another port");
+
+    assert_ne!(
+        engine.info().port,
+        port,
+        "the receiver answered on a port that was already held"
+    );
+    assert_ne!(engine.info().port, 0, "the announce must carry a real port");
+
+    engine.stop().await;
+    drop(occupied);
+    std::fs::remove_dir_all(&root).ok();
+}
