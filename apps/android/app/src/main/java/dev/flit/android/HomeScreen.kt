@@ -1236,7 +1236,7 @@ private fun SettingsTab(
             }
             Text(
                 text = "Flit $version \u00b7 pre-alpha. Files stay on the devices; " +
-                    "the transfer is plain HTTP on this network.",
+                    "transfers are encrypted on this Wi-Fi.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.ink3,
                 modifier = Modifier.padding(start = 2.dp),
