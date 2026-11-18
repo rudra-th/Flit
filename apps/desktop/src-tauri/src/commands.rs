@@ -18,7 +18,9 @@ use tauri::{AppHandle, State};
 use tokio::{net::TcpStream, time::timeout};
 
 use crate::{
-    dto::{Check, Discovery, Doctor, HistoryEntry, NetInterface, Peer, ShareInfo, Status, TrayEntry},
+    dto::{
+        Check, Discovery, Doctor, HistoryEntry, NetInterface, Peer, ShareInfo, Status, TrayEntry,
+    },
     state::Shell,
 };
 
@@ -284,10 +286,7 @@ pub async fn send_to_address(
 /// are taken, not folders, because a page of two hundred links is the most one
 /// share can explain.
 #[tauri::command]
-pub async fn open_share(
-    shell: State<'_, Shell>,
-    paths: Vec<PathBuf>,
-) -> Result<ShareInfo, String> {
+pub async fn open_share(shell: State<'_, Shell>, paths: Vec<PathBuf>) -> Result<ShareInfo, String> {
     let target = shell
         .inner
         .engine

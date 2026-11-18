@@ -125,12 +125,18 @@ impl Policy {
     fn load(path: &PathBuf) -> Self {
         match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
-                log::warn!("consent policy at {} could not be read: {err}", path.display());
+                log::warn!(
+                    "consent policy at {} could not be read: {err}",
+                    path.display()
+                );
                 Self::default()
             }),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(err) => {
-                log::warn!("consent policy at {} could not be read: {err}", path.display());
+                log::warn!(
+                    "consent policy at {} could not be read: {err}",
+                    path.display()
+                );
                 Self::default()
             }
         }
