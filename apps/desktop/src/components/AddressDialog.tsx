@@ -94,8 +94,9 @@ export function AddressDialog({
         <p className="consent-kicker">By address</p>
         <h2 id="address-title">Send to a device Flit cannot see</h2>
         <p className="consent-note" id="address-note">
-          On the other device, open <strong>This device</strong>. Copy the
-          address it is listening on and its fingerprint.
+          On the other device, open its identity screen: This device on
+          desktop, Settings on Android. The address and fingerprint there copy
+          in one click.
         </p>
 
         <label className="address-field">
