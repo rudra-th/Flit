@@ -80,7 +80,7 @@ pub enum ClientError {
         source: std::io::Error,
     },
     /// The handshake completed but the certificate was not the pinned identity.
-    #[error("the peer's key is {presented}, but {expected} was expected")]
+    #[error("the device that answered has a different key: {presented}, not {expected}")]
     PinMismatch {
         /// Fingerprint learned from discovery or a QR code.
         expected: String,
