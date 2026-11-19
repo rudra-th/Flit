@@ -126,7 +126,7 @@ reason:
    `github.com/rudra-th/Flit/issues` is real and reaches a human.
 8. **The end of the funnel sells a preview and says what is wrong with it.** A
    signed release and a store listing do not exist yet, so the page offers the
-   0.1.0 GitHub pre-release with its three assets and one sentence about the
+   0.1.1 GitHub pre-release with its three assets and one sentence about the
    unsigned installer and the debug APK. A disabled download button or a
    waitlist would be furniture; the page states the position and links the
    source, the checksums and the build itself.
@@ -164,7 +164,7 @@ reason:
   two the app now answers: the consent question ("Does it just take whatever
   arrives?") and the browser share ("What if the other computer can't install
   anything?").
-- End: *Download the 0.1.0 preview.* — "Flit is pre-alpha and feature-complete
+- End: *Download the 0.1.1 preview.* — "Flit is pre-alpha and feature-complete
   for v1… It is not a signed release. Windows will warn before it runs the
   installer, and the Android build is a debug APK you sideload."
 

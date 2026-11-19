@@ -16,7 +16,7 @@ own network. No account, no cloud, no configuration.
 > share. The Android app is in `apps/android`, with the same receiving rules and
 > the same browser share. A borrowed computer needs nothing installed: the
 > sender serves a read-only page on port 47822, and nothing is uploaded. The
-> [0.1.0 preview](https://github.com/rudra-th/Flit/releases/tag/v0.1.0) is the
+> [0.1.1 preview](https://github.com/rudra-th/Flit/releases/tag/v0.1.1) is the
 > first build anyone can run; its installer is unsigned and its APK is a debug
 > build, and both say so.
 
@@ -131,13 +131,13 @@ CI runs the same check, plus the frontend build, on every push.
 
 ### Install on Windows
 
-The [0.1.0 pre-release](https://github.com/rudra-th/Flit/releases/tag/v0.1.0)
+The [0.1.1 pre-release](https://github.com/rudra-th/Flit/releases/tag/v0.1.1)
 contains the two ways to run the window:
 
-- `Flit-0.1.0-windows-x64-setup.exe` — a per-user NSIS installer. No administrator
+- `Flit-0.1.1-windows-x64-setup.exe` — a per-user NSIS installer. No administrator
   prompt, no `Program Files`; it installs under `%LOCALAPPDATA%\Flit` and adds a
   Start menu entry.
-- `Flit-0.1.0-windows-x64.zip` — the executable and this README, for machines
+- `Flit-0.1.1-windows-x64.zip` — the executable and this README, for machines
   where an installer is not allowed. Unzip it anywhere and run
   `flit-desktop.exe`.
 
@@ -163,12 +163,12 @@ artifact, `flit-windows-x64`, for a commit that has no tag yet.
 
 ### Install on Android
 
-The same release carries `Flit-0.1.0-android-debug.apk`, debug-signed for
+The same release carries `Flit-0.1.1-android-debug.apk`, debug-signed for
 `arm64-v8a` and `x86_64`. It is a sideload build: no store, no update channel.
 With USB debugging on:
 
 ```sh
-adb install -r Flit-0.1.0-android-debug.apk
+adb install -r Flit-0.1.1-android-debug.apk
 ```
 
 Because CI signs debug builds with its own throwaway key, installing one over a
