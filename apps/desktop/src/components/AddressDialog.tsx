@@ -12,8 +12,10 @@ export interface AddressTarget {
 
 /** `192.168.1.8:47821` or `[fe80::1]:47821`. Hostnames are left out on
  * purpose: the engine dials a `SocketAddr`, and promising names would be a
- * promise it cannot keep. */
-const ADDRESS = /^(\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):(\d{1,5})$/;
+ * promise it cannot keep. Each IPv4 octet is a number 0-255 without leading
+ * zeros, because that is exactly what the engine's parser accepts. */
+const ADDRESS =
+  /^(?:(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|\[[0-9a-fA-F:]+\]):\d{1,5}$/;
 const FINGERPRINT = /^[0-9a-fA-F]{64}$/;
 
 /**
@@ -64,6 +66,14 @@ export function AddressDialog({
     if (port < 1 || port > 65_535) {
       setError("That port is not one a device can listen on.");
       return;
+    }
+    if (!cleanAddr.startsWith("[")) {
+      const host = cleanAddr.slice(0, cleanAddr.lastIndexOf(":"));
+      const octets = host.split(".").map(Number);
+      if (octets.every((octet) => octet === 0) || octets.every((octet) => octet === 255)) {
+        setError("That is not an address a device answers on.");
+        return;
+      }
     }
     if (!FINGERPRINT.test(cleanKey)) {
       setError("The fingerprint is the 64-character key shown on the other device.");
