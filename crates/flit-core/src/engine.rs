@@ -1229,11 +1229,16 @@ impl Engine {
         )
         .await
         {
-            Err(ShareError::Bind { addr, source }) if source.kind() == ErrorKind::AddrInUse => {
+            Err(ShareError::Bind { addr, source })
+                if addr.port() != 0 && is_port_unavailable(&source) =>
+            {
                 // 47822 is tried first because it is what a person types from
-                // another screen, but something else holding it is no reason to
-                // refuse to share: the URL always names the port that worked.
-                log::warn!("{addr} is taken; opening the share on a free port instead");
+                // another screen, but something else holding it — or a driver
+                // reserving it, which Windows reports as denied — is no reason
+                // to refuse to share: the URL always names the port that worked.
+                log::warn!(
+                    "{addr} is unavailable ({source}); opening the share on a free port instead"
+                );
                 BrowserShare::open(
                     self.inner.info.alias.clone(),
                     files(&paths)?,

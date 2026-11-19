@@ -15,6 +15,7 @@ use flit_core::Identity;
 use flit_core::{
     Engine, EngineConfig, EngineError, Event, ItemOutcome, OfferId, SendTarget, collect_targets,
 };
+use flit_server::SHARE_PORT;
 
 /// A scratch directory that does not need a temp-dir crate.
 fn scratch(name: &str) -> PathBuf {
@@ -780,6 +781,34 @@ async fn a_browser_share_lives_until_it_is_stopped() {
     );
 
     engine.stop().await;
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 47822 is a convenience, not a requirement. Somebody else holding it — or a
+/// VPN driver reserving the range, which Windows reports as denied rather than
+/// taken — must not cost the person a share they can read.
+#[tokio::test]
+async fn a_taken_share_port_does_not_stop_the_share() {
+    // If this machine will not let the test take 47822 either, there is nothing
+    // to prove here; the fallback is the same code the receiver uses.
+    let Ok(occupied) = tokio::net::TcpListener::bind(("0.0.0.0", SHARE_PORT)).await else {
+        return;
+    };
+
+    let (engine, root, _) = start_engine(62, "share-port").await;
+    let file = root.join("notes.txt");
+    std::fs::write(&file, b"still readable").unwrap();
+
+    let target = engine.open_share(vec![file]).await.expect("a share");
+    assert!(
+        !target.url.contains(&format!(":{SHARE_PORT}/")),
+        "{} names a port that was already held",
+        target.url
+    );
+
+    engine.close_share().await;
+    engine.stop().await;
+    drop(occupied);
     std::fs::remove_dir_all(&root).ok();
 }
 
