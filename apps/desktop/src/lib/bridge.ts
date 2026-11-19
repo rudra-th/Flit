@@ -35,6 +35,13 @@ export interface FlitBridge {
   /** Offer text — a link, a note — as one item the receiver saves as `name`. */
   sendTextToPeer(deviceId: string, text: string, name: string): Promise<number>;
   sendToAddress(addr: string, fingerprint: string, paths: string[]): Promise<number>;
+  /** Offer text to a typed address. The fingerprint still has to match. */
+  sendTextToAddress(
+    addr: string,
+    fingerprint: string,
+    text: string,
+    name: string,
+  ): Promise<number>;
   /** Whatever is on the system clipboard, as text. Empty means nothing there. */
   readClipboard(): Promise<string>;
   cancel(id: number): Promise<boolean>;
@@ -79,6 +86,8 @@ const shell: FlitBridge = {
     invoke<number>("send_text_to_peer", { deviceId, text, name }),
   sendToAddress: (addr, fingerprint, paths) =>
     invoke<number>("send_to_address", { addr, fingerprint, paths }),
+  sendTextToAddress: (addr, fingerprint, text, name) =>
+    invoke<number>("send_text_to_address", { addr, fingerprint, text, name }),
   readClipboard: () => invoke<string>("read_clipboard"),
   cancel: (id) => invoke<boolean>("cancel_transfer", { id }),
   openShare: (paths) => invoke<Share>("open_share", { paths }),

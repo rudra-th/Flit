@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DropIcon } from "./components/Icons";
+import { AddressDialog, type AddressTarget } from "./components/AddressDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
 import { TopBar, type View } from "./components/TopBar";
 import { getBridge, watchDrag, type FlitBridge } from "./lib/bridge";
@@ -51,6 +52,11 @@ export default function App() {
   const [transfers, setTransfers] = useState<Record<number, Transfer>>({});
   const [tray, setTray] = useState<TrayEntry[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  /** A destination typed in while discovery had nothing to offer. It replaces
+   * the selection: one send has one set of targets, chosen one way or another. */
+  const [manual, setManual] = useState<AddressTarget | null>(null);
+  /** The address form is open. */
+  const [askingAddress, setAskingAddress] = useState(false);
   const [view, setView] = useState<View>(viewFromHash);
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -72,6 +78,8 @@ export default function App() {
   peersRef.current = peers;
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const manualRef = useRef(manual);
+  manualRef.current = manual;
   const trayRef = useRef(tray);
   trayRef.current = tray;
   const bridgeRef = useRef<FlitBridge | null>(null);
@@ -281,7 +289,7 @@ export default function App() {
                 },
           );
           say(
-            "Multicast is blocked on this network, so devices are found by a scan. Receiving still works.",
+            "Multicast is blocked on this network. Send by address instead; receiving still works.",
             "bad",
           );
           return;
@@ -512,8 +520,10 @@ export default function App() {
   );
 
   // Progressive disclosure: with one device there is nothing to choose, so
-  // choosing it is not a step the user should have to take.
+  // choosing it is not a step the user should have to take. A typed address is
+  // already the target, so it is left alone.
   useEffect(() => {
+    if (manual !== null) return;
     setSelected((current) => {
       const alive = current.filter((id) => peers[id] !== undefined);
       // The same selection must keep its identity, or every announce would
@@ -521,10 +531,20 @@ export default function App() {
       if (alive.length === current.length && alive.length > 0) return current;
       return peerList.length === 1 ? [peerList[0].deviceId] : alive;
     });
-  }, [peerList, peers]);
+  }, [manual, peerList, peers]);
+
+  // Choice is one mode at a time: a nearby card and a typed address are both
+  // "where this goes", and letting them accumulate would make the tray lie
+  // about the target.
+  const useAddress = useCallback((target: AddressTarget) => {
+    setManual(target);
+    setSelected([]);
+    setAskingAddress(false);
+  }, []);
 
   // Choosing is a toggle, because one send can go to several devices.
   const toggle = useCallback((deviceId: string) => {
+    setManual(null);
     setSelected((current) =>
       current.includes(deviceId)
         ? current.filter((id) => id !== deviceId)
@@ -536,11 +556,15 @@ export default function App() {
     async (deviceIds?: string[]) => {
       const live = bridgeRef.current;
       if (!live) return;
-      const targets = (deviceIds ?? selectedRef.current).filter(
-        (id) => peersRef.current[id] !== undefined,
-      );
+      const typed = manualRef.current;
       const items = trayRef.current;
-      if (targets.length === 0) {
+      const targets =
+        typed === null
+          ? (deviceIds ?? selectedRef.current).filter(
+              (id) => peersRef.current[id] !== undefined,
+            )
+          : [];
+      if (typed === null && targets.length === 0) {
         say("Choose a device first.", "bad");
         return;
       }
@@ -557,34 +581,62 @@ export default function App() {
       const texts = items.filter((entry) => entry.text !== undefined);
       const extra = Math.max(0, paths.length - 1);
 
-      // One independent session per device. A device that packed up should not
-      // take the others down with it, and every session has its own lane.
-      const results = await Promise.allSettled(
-        targets.map(async (id) => {
-          if (paths.length > 0) {
-            const started = await live.sendToPeer(id, paths);
-            if (extra > 0) {
-              setTransfers((current) => {
-                const transfer = current[started];
-                if (!transfer) return current;
-                return { ...current, [started]: { ...transfer, extra } };
-              });
-            }
-          }
-          for (const entry of texts) {
-            await live.sendTextToPeer(id, entry.text ?? "", entry.name);
-          }
-        }),
-      );
+      // A multi-file send draws one lane, so the rest of the pile is attached
+      // to it for the counter to say what is still to come.
+      const noteExtra = (started: number) => {
+        if (extra === 0) return;
+        setTransfers((current) => {
+          const transfer = current[started];
+          if (!transfer) return current;
+          return { ...current, [started]: { ...transfer, extra } };
+        });
+      };
 
+      // One independent session per destination. A device that packed up
+      // should not take the others down with it, and every session has its
+      // own lane.
+      const jobs =
+        typed === null
+          ? targets.map((id) => ({
+              label: peersRef.current[id]?.alias ?? id,
+              run: async () => {
+                if (paths.length > 0) {
+                  noteExtra(await live.sendToPeer(id, paths));
+                }
+                for (const entry of texts) {
+                  await live.sendTextToPeer(id, entry.text ?? "", entry.name);
+                }
+              },
+            }))
+          : [
+              {
+                label: typed.addr,
+                run: async () => {
+                  if (paths.length > 0) {
+                    noteExtra(
+                      await live.sendToAddress(
+                        typed.addr,
+                        typed.fingerprint,
+                        paths,
+                      ),
+                    );
+                  }
+                  for (const entry of texts) {
+                    await live.sendTextToAddress(
+                      typed.addr,
+                      typed.fingerprint,
+                      entry.text ?? "",
+                      entry.name,
+                    );
+                  }
+                },
+              },
+            ];
+
+      const results = await Promise.allSettled(jobs.map((job) => job.run()));
       const refused = results.flatMap((result, index) =>
         result.status === "rejected"
-          ? [
-              {
-                alias: peersRef.current[targets[index]]?.alias ?? targets[index],
-                error: describe(result.reason),
-              },
-            ]
+          ? [{ alias: jobs[index].label, error: describe(result.reason) }]
           : [],
       );
 
@@ -595,9 +647,9 @@ export default function App() {
 
       // The tray keeps its files when a device refused: the ones that went
       // already landed, and re-sending them would leave copies at the receiver.
-      if (refused.length === targets.length) {
+      if (refused.length === jobs.length) {
         say(
-          targets.length === 1
+          jobs.length === 1
             ? refused[0].error
             : `Nothing left the machine. ${refused[0].alias}: ${refused[0].error}`,
           "bad",
@@ -605,7 +657,7 @@ export default function App() {
         return;
       }
       say(
-        `Sent to ${targets.length - refused.length} of ${targets.length}. ${refused[0].alias}: ${refused[0].error}`,
+        `Sent to ${jobs.length - refused.length} of ${jobs.length}. ${refused[0].alias}: ${refused[0].error}`,
         "bad",
       );
     },
@@ -716,14 +768,16 @@ export default function App() {
     [say],
   );
 
-  // How the tray names where this is going: one name, or a count.
+  // How the tray names where this is going: one name, a count, or an address.
   const chosen = peerList.filter((peer) => selected.includes(peer.deviceId));
   const targetName =
-    chosen.length === 0
-      ? null
-      : chosen.length === 1
-        ? chosen[0].alias
-        : `${chosen.length} devices`;
+    manual !== null
+      ? manual.addr
+      : chosen.length === 0
+        ? null
+        : chosen.length === 1
+          ? chosen[0].alias
+          : `${chosen.length} devices`;
 
   return (
     <div className="app">
@@ -740,7 +794,10 @@ export default function App() {
             history={history}
             share={share}
             sharing={sharing}
+            manual={manual}
             onSelect={toggle}
+            onOpenAddress={() => setAskingAddress(true)}
+            onClearAddress={() => setManual(null)}
             onAdd={() => {
               void (async () => {
                 const live = bridgeRef.current;
@@ -826,6 +883,14 @@ export default function App() {
           onAnswer={(accept, remember) => {
             void answerOffer(offer.id, accept, remember);
           }}
+        />
+      ) : null}
+
+      {askingAddress ? (
+        <AddressDialog
+          current={manual}
+          onClose={() => setAskingAddress(false)}
+          onUse={useAddress}
         />
       ) : null}
     </div>

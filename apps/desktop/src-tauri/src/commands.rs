@@ -255,6 +255,14 @@ pub async fn read_clipboard(app: AppHandle) -> Result<String, String> {
     })
 }
 
+/// Read the address a person typed. The port is part of it: a receiver whose
+/// usual port was taken answers on the one it names instead.
+fn typed_address(addr: &str) -> Result<SocketAddr, String> {
+    addr.trim()
+        .parse()
+        .map_err(|_| "That address needs a port, like 192.168.1.8:47821.".to_string())
+}
+
 /// Send files to an address and a fingerprint, without discovery.
 #[tauri::command]
 pub async fn send_to_address(
@@ -263,10 +271,7 @@ pub async fn send_to_address(
     fingerprint: String,
     paths: Vec<PathBuf>,
 ) -> Result<u64, String> {
-    let addr: SocketAddr = addr
-        .trim()
-        .parse()
-        .map_err(|_| "That address needs a port, like 192.168.1.8:47821.".to_string())?;
+    let addr = typed_address(&addr)?;
     let collected = collect_targets(&paths, None).map_err(|err| err.to_string())?;
     let id = shell
         .inner
@@ -276,6 +281,31 @@ pub async fn send_to_address(
         .map_err(|err| err.to_string())?;
 
     shell.inner.data().note_paths(id.as_u64(), spell(&paths));
+    Ok(id.as_u64())
+}
+
+/// Send one text item to an address and a fingerprint, without discovery.
+///
+/// The same manual path as [`send_to_address`], for a pasted link. No paths are
+/// recorded, so history offers no "send that again" for something that was
+/// never a file.
+#[tauri::command]
+pub async fn send_text_to_address(
+    shell: State<'_, Shell>,
+    addr: String,
+    fingerprint: String,
+    text: String,
+    name: String,
+) -> Result<u64, String> {
+    let addr = typed_address(&addr)?;
+    let id = shell
+        .inner
+        .engine
+        .send_text_to(addr, fingerprint.trim(), text, name)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    shell.inner.data().note_paths(id.as_u64(), Vec::new());
     Ok(id.as_u64())
 }
 

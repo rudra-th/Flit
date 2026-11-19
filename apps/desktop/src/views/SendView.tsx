@@ -2,11 +2,18 @@ import { useEffect, useState } from "react";
 
 import { DeviceCard } from "../components/DeviceCard";
 import { HistoryHead, HistoryRow } from "../components/HistoryRow";
-import { AlertIcon, BrowserIcon, CopyIcon, PlusIcon } from "../components/Icons";
+import {
+  AddressIcon,
+  AlertIcon,
+  BrowserIcon,
+  CopyIcon,
+  PlusIcon,
+} from "../components/Icons";
 import { Lane } from "../components/Lane";
 import { SharePanel } from "../components/SharePanel";
 import { Tray } from "../components/Tray";
-import { rate } from "../lib/format";
+import { rate, shortFingerprint } from "../lib/format";
+import type { AddressTarget } from "../components/AddressDialog";
 import type {
   HistoryEntry,
   Peer,
@@ -31,7 +38,10 @@ export function SendView({
   history,
   share,
   sharing,
+  manual,
   onSelect,
+  onOpenAddress,
+  onClearAddress,
   onAdd,
   onPaste,
   onShare,
@@ -52,7 +62,10 @@ export function SendView({
   history: HistoryEntry[];
   share: Share | null;
   sharing: boolean;
+  manual: AddressTarget | null;
   onSelect: (deviceId: string) => void;
+  onOpenAddress: () => void;
+  onClearAddress: () => void;
   onAdd: () => void;
   onPaste: () => void;
   onShare: () => void;
@@ -77,22 +90,33 @@ export function SendView({
   const running = transfers.filter((transfer) => transfer.state === "running");
   const chosen = peers.filter((peer) => selected.includes(peer.deviceId));
   const target =
-    chosen.length === 1
-      ? chosen[0].alias
-      : chosen.length > 1
-        ? `${chosen.length} devices`
-        : null;
+    manual !== null
+      ? manual.addr
+      : chosen.length === 1
+        ? chosen[0].alias
+        : chosen.length > 1
+          ? `${chosen.length} devices`
+          : null;
   const only = peers.length === 1 ? peers[0] : null;
   const discovery = status?.discovery;
 
   const finding =
     discovery?.state === "unavailable" ? (
       <>
-        Multicast is blocked here, so devices are found by a scan.{" "}
-        <strong>Receiving is not affected.</strong>
+        Multicast is blocked here.{" "}
+        <button type="button" className="link" onClick={onOpenAddress}>
+          Send by address
+        </button>{" "}
+        instead. <strong>Receiving is not affected.</strong>
       </>
     ) : discovery?.state === "off" ? (
-      <>Discovery is off. Send to a device by its address.</>
+      <>
+        Discovery is off.{" "}
+        <button type="button" className="link" onClick={onOpenAddress}>
+          Send by address
+        </button>
+        .
+      </>
     ) : peers.length === 0 ? (
       <>
         No device has answered yet.{" "}
@@ -103,7 +127,7 @@ export function SendView({
         <strong>{peers.length === 1 ? "1 device" : `${peers.length} devices`}</strong>{" "}
         {discovery?.state === "running"
           ? "on the local network"
-          : "found by a scan"}
+          : "already found"}
       </>
     );
 
@@ -152,21 +176,69 @@ export function SendView({
           Nearby
           <span className="count">{peers.length}</span>
           <span className="right">
-            {peers.length > 0 ? "choose one or more, then send" : ""}
+            {manual !== null ? (
+              "sending by address"
+            ) : peers.length > 0 ? (
+              <button
+                type="button"
+                className="link"
+                onClick={onOpenAddress}
+                title="Send to a device whose announcement did not arrive"
+              >
+                Send by address
+              </button>
+            ) : (
+              ""
+            )}
           </span>
         </div>
 
-        {peers.length === 0 ? (
-          <div className="devices-empty">
-            <AlertIcon size={18} />
-            <span>
-              <strong>Nothing nearby.</strong> Both devices must be on the same
-              network.{" "}
-              <button type="button" className="link" onClick={onOpenDoctor}>
-                Check the network
-              </button>
+        {manual !== null ? (
+          <div className="manual-target">
+            <span className="manual-icon" aria-hidden>
+              <AddressIcon size={16} />
             </span>
+            <span className="manual-body">
+              <span className="manual-name mono">{manual.addr}</span>
+              <span className="manual-key">
+                key {shortFingerprint(manual.fingerprint)}&hellip; · chosen by
+                address
+              </span>
+            </span>
+            <button
+              type="button"
+              className="btn btn-quiet manual-action"
+              onClick={onOpenAddress}
+            >
+              Change
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet manual-action"
+              onClick={onClearAddress}
+            >
+              Remove
+            </button>
           </div>
+        ) : null}
+
+        {peers.length === 0 ? (
+          manual !== null ? null : (
+            <div className="devices-empty">
+              <AlertIcon size={18} />
+              <span>
+                <strong>Nothing nearby.</strong> Both devices must be on the
+                same network.{" "}
+                <button type="button" className="link" onClick={onOpenAddress}>
+                  Send by address
+                </button>{" "}
+                <span className="dot">·</span>{" "}
+                <button type="button" className="link" onClick={onOpenDoctor}>
+                  Check the network
+                </button>
+              </span>
+            </div>
+          )
         ) : (
           <div className={only === null ? "devices" : "devices single"}>
             {peers.map((peer) => (
@@ -187,7 +259,7 @@ export function SendView({
         <Tray
           entries={tray}
           target={target}
-          canSend={chosen.length > 0}
+          canSend={manual !== null || chosen.length > 0}
           onAdd={onAdd}
           onRemove={onRemove}
           onClear={onClear}

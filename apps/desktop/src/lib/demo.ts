@@ -396,6 +396,18 @@ export function createDemo(): FlitBridge {
 
   let seeded = !lanesWanted();
 
+  /** The peer a typed address stands for. A known address keeps its name; a
+   * new one is labelled by what was typed and the key it was given. */
+  const manualTarget = (addr: string, fingerprint: string): Peer =>
+    [...peers.values()].find((entry) => entry.addr === addr) ?? {
+      deviceId: "manual",
+      alias: addr,
+      fingerprint,
+      deviceType: "desktop",
+      addr,
+      source: "manual",
+    };
+
   return {
     demo: true,
 
@@ -471,17 +483,7 @@ export function createDemo(): FlitBridge {
     },
 
     async sendToAddress(addr, fingerprint, paths) {
-      const peer = [...peers.values()].find((entry) => entry.addr === addr);
-      const target: Peer =
-        peer ??
-        ({
-          deviceId: "manual",
-          alias: addr,
-          fingerprint,
-          deviceType: "desktop",
-          addr,
-          source: "manual",
-        } satisfies Peer);
+      const target = manualTarget(addr, fingerprint);
       const entries = describe(paths);
       const bits = entries.reduce((sum, entry) => sum + entry.bytes, 0);
       const files = entries.reduce((sum, entry) => sum + entry.files, 0);
@@ -494,6 +496,21 @@ export function createDemo(): FlitBridge {
         bits,
         files,
         fileOutcomes(paths, bits),
+      );
+    },
+
+    async sendTextToAddress(addr, fingerprint, text, name) {
+      const target = manualTarget(addr, fingerprint);
+      const bytes = new TextEncoder().encode(text).length;
+      return run(
+        nextId++,
+        target,
+        name,
+        [],
+        bytes,
+        1,
+        [{ path: "", name, savedAs: name, bytes, error: null }],
+        900,
       );
     },
 

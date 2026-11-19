@@ -36,6 +36,7 @@ fn main() {
             commands::send_to_peer,
             commands::send_text_to_peer,
             commands::send_to_address,
+            commands::send_text_to_address,
             commands::cancel_transfer,
             commands::read_clipboard,
             commands::open_share,

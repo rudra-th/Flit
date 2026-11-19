@@ -71,6 +71,16 @@ export function PulseIcon(props: IconProps) {
   );
 }
 
+/** A destination typed in rather than discovered: a pin, not a place. */
+export function AddressIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 21s6-5.25 6-10a6 6 0 1 0-12 0c0 4.75 6 10 6 10z" />
+      <circle cx="12" cy="11" r="2.25" />
+    </svg>
+  );
+}
+
 export function DeviceIcon(props: IconProps) {
   return (
     <svg {...base(props)}>
