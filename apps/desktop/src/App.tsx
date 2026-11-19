@@ -556,7 +556,9 @@ export default function App() {
     async (deviceIds?: string[]) => {
       const live = bridgeRef.current;
       if (!live) return;
-      const typed = manualRef.current;
+      // A named destination is an explicit choice (a double-clicked card), so
+      // it wins over a typed address that happens to still be on screen.
+      const typed = deviceIds === undefined ? manualRef.current : null;
       const items = trayRef.current;
       const targets =
         typed === null
