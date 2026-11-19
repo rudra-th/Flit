@@ -253,6 +253,7 @@ svg {
   cursor: pointer;
   transition:
     background-color 140ms ease,
+    border-color 140ms ease,
     color 140ms ease,
     transform 140ms ease;
 }
@@ -266,6 +267,14 @@ svg {
 .btn-solid {
   background: var(--accent);
   color: var(--on-accent);
+}
+
+/* A second and third download may not compete with the first. The outline is
+ * the same 1px line the page already uses for rules, so the row stays one
+ * instrument rather than three buttons. */
+.btn-line {
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
 }
 
 .btn:active {
@@ -1512,9 +1521,16 @@ svg {
 
 .get-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 22px;
   margin-top: 28px;
+}
+
+.get-small {
+  margin-top: 18px;
+  font-size: var(--step-small);
+  color: var(--ink-3);
 }
 
 .status {
@@ -1700,6 +1716,11 @@ svg {
 @media (hover: hover) and (pointer: fine) {
   .btn-solid:hover {
     background: var(--accent-hover);
+  }
+
+  .btn-line:hover {
+    border-color: var(--ink-3);
+    color: var(--accent);
   }
 
   .link:hover {

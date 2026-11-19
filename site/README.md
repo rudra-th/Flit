@@ -1,8 +1,8 @@
 # The Flit landing page
 
 One static page, two hand-written source files, two self-hosted typefaces, and
-no third-party request of any kind. It exists to explain Flit honestly before
-there is anything to download.
+no third-party request of any kind. It exists to explain Flit honestly and to
+point at the first build anyone can run.
 
 ```
 site/
@@ -124,11 +124,12 @@ reason:
    and zone instead.
 7. **The contact tile is a link to GitHub issues.** No address exists to print;
    `github.com/rudra-th/Flit/issues` is real and reaches a human.
-8. **The end of the funnel says "nothing to download yet".** Flit is pre-alpha
-   and there is no signed release or installer. A disabled download button or a
-   waitlist would be furniture; the page states the position, says what is built
-   and what is not, and links the two things that do exist: the source and the
-   releases page.
+8. **The end of the funnel sells a preview and says what is wrong with it.** A
+   signed release and a store listing do not exist yet, so the page offers the
+   0.1.0 GitHub pre-release with its three assets and one sentence about the
+   unsigned installer and the debug APK. A disabled download button or a
+   waitlist would be furniture; the page states the position and links the
+   source, the checksums and the build itself.
 9. **The licence line is `MIT OR Apache-2.0`, not GPL.** The repository is dual
    licensed (`LICENSE-MIT`, `LICENSE-APACHE`); the page says what the repository
    says.
@@ -163,7 +164,9 @@ reason:
   two the app now answers: the consent question ("Does it just take whatever
   arrives?") and the browser share ("What if the other computer can't install
   anything?").
-- End: *Nothing to download yet.*
+- End: *Download the 0.1.0 preview.* — "Flit is pre-alpha and feature-complete
+  for v1… It is not a signed release. Windows will warn before it runs the
+  installer, and the Android build is a debug APK you sideload."
 
 Demo data used in the fragments (the same batch throughout): Studio PC /
 Rhea — Pixel 9 / Attic NAS, "Q3 handover" 15 files · 186.4 MB, 89 MB/s, 2.1 s,
@@ -204,6 +207,7 @@ Current result: **0 FAIL, 5 WARN**.
 - One accent (`#0e7a5c`), one ground, three radii (16 / 11 / 999), no shadows,
   no gradients, no glass, no mono outside `<code>`, no emoji in text.
 - Nothing invented: no testimonials, no logos, no press, no user counts, no
-  download, no email address, no city.
+  download that does not exist, no email address, no city.
 - Every claim traceable to the repository: the protocol, the resume behaviour,
-  the pinning rule, the licences, the benchmark numbers.
+  the pinning rule, the licences, the benchmark numbers, the release assets and
+  their checksums.

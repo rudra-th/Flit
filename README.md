@@ -15,7 +15,10 @@ own network. No account, no cloud, no configuration.
 > a cancel, past sends, a network doctor, the consent question, and a browser
 > share. The Android app is in `apps/android`, with the same receiving rules and
 > the same browser share. A borrowed computer needs nothing installed: the
-> sender serves a read-only page on port 47822, and nothing is uploaded.
+> sender serves a read-only page on port 47822, and nothing is uploaded. The
+> [0.1.0 preview](https://github.com/rudra-th/Flit/releases/tag/v0.1.0) is the
+> first build anyone can run; its installer is unsigned and its APK is a debug
+> build, and both say so.
 
 **[getflit.surge.sh](https://getflit.surge.sh)** is the page that explains it: the
 three moves, a real size-to-time figure, and five promises you can switch off.
@@ -128,16 +131,19 @@ CI runs the same check, plus the frontend build, on every push.
 
 ### Install on Windows
 
-Each green `package (windows)` run on the
-[Actions tab](https://github.com/rudra-th/Flit/actions/workflows/ci.yml) leaves
-one artifact, `flit-windows-x64`, containing the two ways to run the window:
+The [0.1.0 pre-release](https://github.com/rudra-th/Flit/releases/tag/v0.1.0)
+contains the two ways to run the window:
 
-- `Flit_0.1.0_x64-setup.exe` — a per-user NSIS installer. No administrator
+- `Flit-0.1.0-windows-x64-setup.exe` — a per-user NSIS installer. No administrator
   prompt, no `Program Files`; it installs under `%LOCALAPPDATA%\Flit` and adds a
   Start menu entry.
 - `Flit-0.1.0-windows-x64.zip` — the executable and this README, for machines
   where an installer is not allowed. Unzip it anywhere and run
   `flit-desktop.exe`.
+
+The build is unsigned. SmartScreen will warn the first time it runs; choose
+**More info → Run anyway** if the checksum in `SHA256SUMS.txt` matches the file
+you downloaded. A signed installer is the next release, not this one.
 
 The installer fetches the WebView2 runtime if Windows 10 does not have it yet,
 so that first install needs a network connection. Windows 11 and an up-to-date
@@ -152,15 +158,23 @@ firewall. Allow it on private networks; otherwise other devices will see the PC
 and never be able to connect. The Doctor screen checks that the receiver answers
 on its own LAN address and repeats the same advice when it does not.
 
+Every green `package (windows)` run also leaves the same pair as an Actions
+artifact, `flit-windows-x64`, for a commit that has no tag yet.
+
 ### Install on Android
 
-The `android (debug apk)` job on the same Actions tab leaves
-`flit-android-debug`, a debug-signed APK for `arm64-v8a` and `x86_64`. With USB
-debugging on:
+The same release carries `Flit-0.1.0-android-debug.apk`, debug-signed for
+`arm64-v8a` and `x86_64`. It is a sideload build: no store, no update channel.
+With USB debugging on:
 
 ```sh
-adb install -r app-debug.apk
+adb install -r Flit-0.1.0-android-debug.apk
 ```
+
+Because CI signs debug builds with its own throwaway key, installing one over a
+build from a different run can be refused. `adb uninstall dev.flit.android`
+first, then install. The `android (debug apk)` job still uploads
+`flit-android-debug` on every green run.
 
 The phone needs no account and asks for no runtime permission. It appears on the
 computer's Devices screen on its own, under the name the phone chose — two

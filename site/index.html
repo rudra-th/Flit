@@ -756,30 +756,48 @@
         </div>
       </section>
 
-      <!-- 5. The honest end of the funnel: nothing to download yet. -->
+      <!-- 5. The honest end of the funnel: a preview anyone can run, and what is
+           not ready about it. -->
       <section class="section get" id="get" aria-labelledby="get-title">
         <div class="grid">
           <div class="col-1-7">
             <h2 class="section-head" id="get-title" data-reveal>
-              Nothing to download yet.
+              Download the 0.1.0 preview.
             </h2>
             <p class="get-body" data-reveal>
-              Flit is pre-alpha, and the v1 features are built: the engine, the
-              desktop shell, the Android app, the consent question on both, and the
-              browser page a borrowed computer can read. What is missing is the
-              release — signed builds and an installer. When they exist they will
-              be a GitHub release: no email, no waitlist, no counter on this page.
+              Flit is pre-alpha and feature-complete for v1. This is the first
+              build anyone can run: the engine, the desktop window, the Android
+              app, the consent question on both, and the browser page a borrowed
+              computer can read. It is not a signed release. Windows will warn
+              before it runs the installer, and the Android build is a debug APK
+              you sideload. No email, no waitlist, no counter on this page.
             </p>
             <div class="get-actions" data-reveal>
-              <a class="btn btn-solid" href="https://github.com/rudra-th/Flit"
-                >Watch the repository</a
+              <a
+                class="btn btn-solid"
+                href="https://github.com/rudra-th/Flit/releases/download/v0.1.0/Flit-0.1.0-windows-x64-setup.exe"
+                >Windows installer</a
               >
               <a
-                class="link"
-                href="https://github.com/rudra-th/Flit/releases"
-                >Releases</a
+                class="btn btn-line"
+                href="https://github.com/rudra-th/Flit/releases/download/v0.1.0/Flit-0.1.0-windows-x64.zip"
+                >Portable zip</a
+              >
+              <a
+                class="btn btn-line"
+                href="https://github.com/rudra-th/Flit/releases/download/v0.1.0/Flit-0.1.0-android-debug.apk"
+                >Android APK</a
               >
             </div>
+            <p class="get-small" data-reveal>
+              <a
+                class="link"
+                href="https://github.com/rudra-th/Flit/releases/download/v0.1.0/SHA256SUMS.txt"
+                >SHA256SUMS</a
+              >
+              · unreleased in any store · the source is on
+              <a class="link" href="https://github.com/rudra-th/Flit">GitHub</a>
+            </p>
           </div>
 
           <div class="col-8-12">
@@ -794,14 +812,14 @@
               </li>
               <li data-reveal>
                 <span>Desktop shell</span>
-                <span class="status-state">builds on Windows and Linux</span>
+                <span class="status-state">Windows installer; Linux from source</span>
               </li>
               <li data-reveal>
                 <span>Android</span>
-                <span class="status-state">builds from source</span>
+                <span class="status-state">debug APK, sideload</span>
               </li>
               <li data-reveal>
-                <span>Signed release and installer</span>
+                <span>Code signing</span>
                 <span class="status-state is-off">not yet</span>
               </li>
             </ul>
