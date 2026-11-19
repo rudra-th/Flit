@@ -1572,6 +1572,7 @@ private fun AddressDialog(
 ) {
     var addr by remember { mutableStateOf("") }
     var fingerprint by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
     val cleanAddr = addr.trim()
     val cleanFingerprint = fingerprint.trim()
 
@@ -1593,28 +1594,58 @@ private fun AddressDialog(
                 Spacer(Modifier.height(14.dp))
                 OutlinedTextField(
                     value = addr,
-                    onValueChange = { addr = it },
+                    onValueChange = {
+                        addr = it
+                        error = null
+                    },
                     singleLine = true,
                     label = { Text("Address") },
                     placeholder = { Text("192.168.1.20:47821") },
+                    isError = error != null && addressProblem(cleanAddr) != null,
                 )
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = fingerprint,
-                    onValueChange = { fingerprint = it },
+                    onValueChange = {
+                        fingerprint = it
+                        error = null
+                    },
                     singleLine = true,
                     label = { Text("Fingerprint") },
                     placeholder = { Text("64 hex characters") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = FontFamily.Monospace,
                     ),
+                    isError = error != null && !FINGERPRINT_SHAPE.matches(cleanFingerprint),
                 )
+                if (error != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = error.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
                 enabled = cleanAddr.isNotEmpty() && cleanFingerprint.isNotEmpty(),
-                onClick = { onUse(cleanAddr, cleanFingerprint) },
+                onClick = {
+                    // The same two checks the desktop form makes, so a typo is
+                    // named here instead of becoming a failed dial or handshake.
+                    val problem = addressProblem(cleanAddr)
+                        ?: if (FINGERPRINT_SHAPE.matches(cleanFingerprint)) {
+                            null
+                        } else {
+                            "The fingerprint is the 64-character key shown on the other device."
+                        }
+                    if (problem == null) {
+                        onUse(cleanAddr, cleanFingerprint.lowercase())
+                    } else {
+                        error = problem
+                    }
+                },
             ) {
                 Text("Use")
             }
@@ -1623,6 +1654,33 @@ private fun AddressDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
+}
+
+/** 0-255 per octet, no leading zeros: what the engine's own parser accepts. */
+private val IPV4_SHAPE =
+    Regex("""^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$""")
+
+/** Brackets and a port are required; the engine parses the IPv6 inside them. */
+private val IPV6_SHAPE = Regex("""^\[[0-9a-fA-F:]+\]$""")
+
+/** An Ed25519 fingerprint is 64 hex characters. */
+private val FINGERPRINT_SHAPE = Regex("""^[0-9a-fA-F]{64}$""")
+
+/** Why this address will not dial, or null if it will. */
+private fun addressProblem(text: String): String? {
+    val colon = text.lastIndexOf(':')
+    if (colon <= 0) return "Include the port, like 192.168.1.20:47821."
+    val host = text.substring(0, colon)
+    val port = text.substring(colon + 1).toIntOrNull()
+    if ((!IPV4_SHAPE.matches(host) && !IPV6_SHAPE.matches(host)) || port == null ||
+        port !in 1..65535
+    ) {
+        return "An address looks like 192.168.1.20:47821."
+    }
+    if (host == "0.0.0.0" || host == "255.255.255.255") {
+        return "That is not an address a device answers on."
+    }
+    return null
 }
 
 /**
