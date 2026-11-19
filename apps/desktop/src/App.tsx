@@ -678,7 +678,16 @@ export default function App() {
         await live.sendToAddress(entry.addr, entry.fingerprint, entry.paths);
         go("send");
       } catch (error) {
-        say(describe(error), "bad");
+        const message = describe(error);
+        // A resend dials the address this send used. If nothing answers there,
+        // the device may simply have moved, and the two ways that still work
+        // are worth naming. Every other failure is worth reading as it is.
+        say(
+          /could not reach/.test(message)
+            ? "That device did not answer at its old address. Try Nearby, or send by address."
+            : message,
+          "bad",
+        );
       }
     },
     [say],
