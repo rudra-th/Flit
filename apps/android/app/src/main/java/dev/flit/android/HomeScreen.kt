@@ -1584,7 +1584,9 @@ private fun AddressDialog(
             Column {
                 Text(
                     text = "For a device on another network, or one whose announcement " +
-                        "did not arrive. The fingerprint is still what proves who answers.",
+                        "did not arrive. The fingerprint is still what proves who answers. " +
+                        "On the other device, both are on its identity screen: Settings on " +
+                        "Android, This device on desktop.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = FlitPalette.colors.ink2,
                 )
