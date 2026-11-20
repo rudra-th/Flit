@@ -56,11 +56,12 @@ the phone were receiving from a screen, which is the opposite direction.
 3. **The share UI.** Both shells offer "Share in a browser", show the address
    and when the share ends, copy it, and stop it on request. The panel is the
    same instruction on either screen, and the address is never truncated.
-4. **The first build anyone can run.** `v0.1.1` is published as a GitHub
-   pre-release from a tag: the Windows installer, the portable zip and a debug
+4. **The first build anyone can run.** `v0.1.2` is published as a GitHub
+   pre-release from a tag: the Windows installer, the portable zip and a signed
    APK, with checksums. CI builds all three, so the release holds exactly what
-   the run passed. It is deliberately unsigned and labeled a preview; code
-   signing and a store listing are the remaining release work, not engine work.
+   the run passed. It is deliberately labeled a preview; the Windows installer
+   is still unsigned, and a store listing is remaining release work, not engine
+   work.
 
 ## Not planned
 

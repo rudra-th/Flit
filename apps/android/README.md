@@ -46,8 +46,21 @@ cd apps/android
 ```
 
 The APK lands in `app/build/outputs/apk/debug/app-debug.apk`. CI builds the same
-thing on every push as the `android (debug apk)` artifact, so a green run is the
+thing on every push as the `android (apk)` artifact, so a green run is the
 easiest place to get one.
+
+A tag builds the release APK instead, signed with the project's key:
+
+```sh
+FLIT_KEYSTORE=/path/to/flit-release.jks \
+FLIT_KEYSTORE_PASSWORD=… FLIT_KEY_ALIAS=flit FLIT_KEY_PASSWORD=… \
+./gradlew :app:assembleRelease
+```
+
+Without those four variables the release build is unsigned; CI refuses to publish
+one. The key is base64 in the `ANDROID_KEYSTORE_BASE64` secret, with
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`
+beside it.
 
 ## Installing
 
@@ -55,17 +68,23 @@ easiest place to get one.
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The APK is a debug build signed with the debug key: fine for a phone you own,
-not for distribution. It carries `arm64-v8a` and `x86_64`; an old 32-bit phone
-will install and then fail to load the library.
+The debug APK is signed with the debug key: fine for a phone you own, not for
+distribution. It carries `arm64-v8a` and `x86_64`; an old 32-bit phone will
+install and then fail to load the library.
+
+The published 0.1.2 build is signed with the release key, so it installs over
+itself from then on. The 0.1.1 debug build has to be uninstalled once, because
+its signature came from CI's throwaway key.
 
 ## What it asks for
 
 Four normal permissions, none of them prompted at runtime: `INTERNET` for the
 listener, `ACCESS_NETWORK_STATE` and `ACCESS_WIFI_STATE` to see the network, and
 `CHANGE_WIFI_MULTICAST_STATE` so the Wi-Fi stack stops filtering other devices'
-announcements. No location permission, no storage permission: the identity and
-received files live in the app's own `filesDir`.
+announcements. No location permission, no storage permission: the identity lives
+in the app's own `filesDir`, and received files are copied into the public store
+(`Download/Flit`, `Pictures/Flit`, `Movies/Flit`) with MediaStore, which needs no
+permission for the app's own writes on Android 10 and later.
 
 Android hides multicast from apps unless a `MulticastLock` is held, so the app
 takes one while the screen is alive. Without it the phone announces but never

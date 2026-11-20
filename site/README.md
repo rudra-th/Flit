@@ -125,9 +125,9 @@ reason:
 7. **The contact tile is a link to GitHub issues.** No address exists to print;
    `github.com/rudra-th/Flit/issues` is real and reaches a human.
 8. **The end of the funnel sells a preview and says what is wrong with it.** A
-   signed release and a store listing do not exist yet, so the page offers the
-   0.1.1 GitHub pre-release with its three assets and one sentence about the
-   unsigned installer and the debug APK. A disabled download button or a
+   store listing does not exist yet, so the page offers the 0.1.2 GitHub
+   pre-release with its three assets and one sentence about the unsigned
+   installer and the signed APK. A disabled download button or a
    waitlist would be furniture; the page states the position and links the
    source, the checksums and the build itself.
 9. **The licence line is `MIT OR Apache-2.0`, not GPL.** The repository is dual
@@ -164,9 +164,9 @@ reason:
   two the app now answers: the consent question ("Does it just take whatever
   arrives?") and the browser share ("What if the other computer can't install
   anything?").
-- End: *Download the 0.1.1 preview.* — "Flit is pre-alpha and feature-complete
-  for v1… It is not a signed release. Windows will warn before it runs the
-  installer, and the Android build is a debug APK you sideload."
+- End: *Download the 0.1.2 preview.* — "Flit is pre-alpha and feature-complete
+  for v1… The Windows installer is unsigned, so Windows will warn before it runs;
+  the Android APK is signed with Flit's own release key and sideloads."
 
 Demo data used in the fragments (the same batch throughout): Studio PC /
 Rhea — Pixel 9 / Attic NAS, "Q3 handover" 15 files · 186.4 MB, 89 MB/s, 2.1 s,

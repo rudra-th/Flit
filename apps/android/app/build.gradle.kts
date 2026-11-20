@@ -6,6 +6,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// The release key is never in the repository: CI holds it base64-encoded in
+// secrets, and a local build can point FLIT_KEYSTORE at the same file. When it
+// is absent the release build is unsigned, which is a test artifact, not
+// something to publish.
+val releaseKey = System.getenv("FLIT_KEYSTORE")
+val releaseKeyPassword = System.getenv("FLIT_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("FLIT_KEY_ALIAS")
+val releaseKeyPassword2 = System.getenv("FLIT_KEY_PASSWORD")
+val hasReleaseKey = listOf(
+    releaseKey,
+    releaseKeyPassword,
+    releaseKeyAlias,
+    releaseKeyPassword2,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "dev.flit.android"
     compileSdk = 36
@@ -14,8 +29,8 @@ android {
         applicationId = "dev.flit.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.2"
 
         // The two ABIs CI compiles. JNA's aar carries mips and armeabi stubs;
         // shipping them would claim an install the engine cannot serve.
@@ -24,11 +39,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKey) {
+                storeFile = file(releaseKey!!)
+                storePassword = releaseKeyPassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword2
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // The only release this project has is a debug APK from CI. Turning
-            // minification on would shrink a build nobody ships.
+            // The APK is an unsigned test artifact unless the release key is
+            // present. A tag run always supplies it, so the published APK keeps
+            // one identity and upgrades over the previous install.
             isMinifyEnabled = false
+            if (hasReleaseKey) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

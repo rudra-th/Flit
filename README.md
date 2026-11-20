@@ -16,9 +16,9 @@ own network. No account, no cloud, no configuration.
 > share. The Android app is in `apps/android`, with the same receiving rules and
 > the same browser share. A borrowed computer needs nothing installed: the
 > sender serves a read-only page on port 47822, and nothing is uploaded. The
-> [0.1.1 preview](https://github.com/rudra-th/Flit/releases/tag/v0.1.1) is the
-> first build anyone can run; its installer is unsigned and its APK is a debug
-> build, and both say so.
+> [0.1.2 preview](https://github.com/rudra-th/Flit/releases/tag/v0.1.2) is the
+> first build with signing on the phone: the Windows installer is still unsigned,
+> the APK is signed with Flit's own release key, and both say so.
 
 **[getflit.surge.sh](https://getflit.surge.sh)** is the page that explains it: the
 three moves, a real size-to-time figure, and five promises you can switch off.
@@ -131,19 +131,19 @@ CI runs the same check, plus the frontend build, on every push.
 
 ### Install on Windows
 
-The [0.1.1 pre-release](https://github.com/rudra-th/Flit/releases/tag/v0.1.1)
+The [0.1.2 pre-release](https://github.com/rudra-th/Flit/releases/tag/v0.1.2)
 contains the two ways to run the window:
 
-- `Flit-0.1.1-windows-x64-setup.exe` — a per-user NSIS installer. No administrator
+- `Flit-0.1.2-windows-x64-setup.exe` — a per-user NSIS installer. No administrator
   prompt, no `Program Files`; it installs under `%LOCALAPPDATA%\Flit` and adds a
   Start menu entry.
-- `Flit-0.1.1-windows-x64.zip` — the executable and this README, for machines
+- `Flit-0.1.2-windows-x64.zip` — the executable and this README, for machines
   where an installer is not allowed. Unzip it anywhere and run
   `flit-desktop.exe`.
 
-The build is unsigned. SmartScreen will warn the first time it runs; choose
-**More info → Run anyway** if the checksum in `SHA256SUMS.txt` matches the file
-you downloaded. A signed installer is the next release, not this one.
+The Windows installer is unsigned. SmartScreen will warn the first time it runs;
+choose **More info → Run anyway** if the checksum in `SHA256SUMS.txt` matches the
+file you downloaded. A signed installer is the next release, not this one.
 
 The installer fetches the WebView2 runtime if Windows 10 does not have it yet,
 so that first install needs a network connection. Windows 11 and an up-to-date
@@ -163,18 +163,27 @@ artifact, `flit-windows-x64`, for a commit that has no tag yet.
 
 ### Install on Android
 
-The same release carries `Flit-0.1.1-android-debug.apk`, debug-signed for
-`arm64-v8a` and `x86_64`. It is a sideload build: no store, no update channel.
+The same release carries `Flit-0.1.2-android.apk`, signed with Flit's release key
+for `arm64-v8a` and `x86_64`. It is a sideload build: no store, no update channel.
 With USB debugging on:
 
 ```sh
-adb install -r Flit-0.1.1-android-debug.apk
+adb uninstall dev.flit.android   # only if a 0.1.1 debug build is installed
+adb install Flit-0.1.2-android.apk
 ```
 
-Because CI signs debug builds with its own throwaway key, installing one over a
-build from a different run can be refused. `adb uninstall dev.flit.android`
-first, then install. The `android (debug apk)` job still uploads
-`flit-android-debug` on every green run.
+The uninstall is a one-time cost. The 0.1.1 build was signed with CI's throwaway
+debug key, so Android refuses to upgrade across it; uninstalling wipes the
+identity, the trust list and the received files. From 0.1.2 on, every release
+carries the same signature, so `adb install -r` upgrades in place and keeps them.
+The release key lives in CI secrets; the debug APK that
+`android (apk)` builds on every push is still a test artifact and is not
+published.
+
+Received files are copied to the phone's public storage as they land:
+`Download/Flit` for documents and archives, `Pictures/Flit` and `Movies/Flit` for
+photos and video. The Receive screen lists the same files and can open, share or
+delete them without a storage permission.
 
 The phone needs no account and asks for no runtime permission. It appears on the
 computer's Devices screen on its own, under the name the phone chose — two
