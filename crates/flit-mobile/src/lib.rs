@@ -386,14 +386,22 @@ impl MobileEngine {
     /// URIs into its cache first, because the engine streams from files and has
     /// no business holding a content resolver.
     pub fn send_files(&self, device_id: String, paths: Vec<String>) -> Result<u64, MobileError> {
-        let peer = self
-            .runtime
-            .block_on(self.engine.peers())
-            .into_iter()
-            .find(|peer| peer.device_id == device_id)
-            .ok_or_else(|| MobileError::start("that device is no longer on this network"))?;
+        let peer = self.peer(device_id)?;
+        self.start_send(peer.0, &peer.1, paths)
+    }
 
-        self.start_send(peer.addr, &peer.fingerprint, paths)
+    /// Send one text item — a link, a note — to a device from the peer list.
+    ///
+    /// The receiver saves it as an ordinary file named `name`. Text is a file
+    /// with no bytes to stream, so the counter settles as soon as it lands.
+    pub fn send_text(
+        &self,
+        device_id: String,
+        text: String,
+        name: String,
+    ) -> Result<u64, MobileError> {
+        let peer = self.peer(device_id)?;
+        self.start_text(peer.0, &peer.1, text, name)
     }
 
     /// Send files to an address typed by the person, not a discovered peer.
@@ -409,6 +417,18 @@ impl MobileEngine {
     ) -> Result<u64, MobileError> {
         let addr = parse_addr(&addr)?;
         self.start_send(addr, &fingerprint, paths)
+    }
+
+    /// Send one text item to a typed address. The key still has to match.
+    pub fn send_text_to(
+        &self,
+        addr: String,
+        fingerprint: String,
+        text: String,
+        name: String,
+    ) -> Result<u64, MobileError> {
+        let addr = parse_addr(&addr)?;
+        self.start_text(addr, &fingerprint, text, name)
     }
 
     /// Stop a send. False when it had already ended.
@@ -477,6 +497,17 @@ impl MobileEngine {
 /// Small helpers the exported impl shares. Not part of the FFI surface: a
 /// `SocketAddr` is not one of the types UniFFI can carry.
 impl MobileEngine {
+    /// Resolve a peer id to the address and key a send needs.
+    fn peer(&self, device_id: String) -> Result<(SocketAddr, String), MobileError> {
+        let peer = self
+            .runtime
+            .block_on(self.engine.peers())
+            .into_iter()
+            .find(|peer| peer.device_id == device_id)
+            .ok_or_else(|| MobileError::start("that device is no longer on this network"))?;
+        Ok((peer.addr, peer.fingerprint))
+    }
+
     /// Turn paths into targets and start a send to `addr`.
     fn start_send(
         &self,
@@ -493,6 +524,24 @@ impl MobileEngine {
         let id = self
             .runtime
             .block_on(self.engine.send_to(addr, fingerprint, collected.targets))
+            .map_err(MobileError::start)?;
+        Ok(id.as_u64())
+    }
+
+    /// Hand one text item to the engine, which carries it in the manifest.
+    fn start_text(
+        &self,
+        addr: SocketAddr,
+        fingerprint: &str,
+        text: String,
+        name: String,
+    ) -> Result<u64, MobileError> {
+        if text.trim().is_empty() {
+            return Err(MobileError::start("there is nothing to send"));
+        }
+        let id = self
+            .runtime
+            .block_on(self.engine.send_text_to(addr, fingerprint, text, name))
             .map_err(MobileError::start)?;
         Ok(id.as_u64())
     }

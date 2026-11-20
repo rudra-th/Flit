@@ -2,6 +2,7 @@
 
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.StatFs
 import android.text.format.Formatter
 import android.widget.Toast
@@ -114,6 +115,7 @@ fun HomeScreen(
     onNoticeShown: () -> Unit,
     onChoose: (String) -> Unit,
     onSend: (List<Uri>) -> Unit,
+    onSendText: (String) -> Unit,
     onShare: (List<Uri>) -> Unit,
     onStopShare: () -> Unit,
     onCancelSend: () -> Unit,
@@ -131,6 +133,7 @@ fun HomeScreen(
     var tab by rememberSaveable { mutableStateOf(FlitTab.Receive.name) }
     var renaming by remember { mutableStateOf(false) }
     var addressing by remember { mutableStateOf(false) }
+    var texting by remember { mutableStateOf(false) }
     /** The ledger row whose actions are on the table, if any. */
     var fileActions by remember { mutableStateOf<ReceivedFile?>(null) }
     /** The picker was opened for a browser share, not a device send. */
@@ -206,6 +209,7 @@ fun HomeScreen(
                         onCancelSend = onCancelSend,
                         onDismissTransfer = onDismissTransfer,
                         onAddress = { addressing = true },
+                        onText = { texting = true },
                         onClearTarget = onClearTarget,
                     )
                     FlitTab.Settings -> SettingsTab(
@@ -242,6 +246,16 @@ fun HomeScreen(
                 onUse = { addr, fingerprint ->
                     addressing = false
                     onUseAddress(addr, fingerprint)
+                },
+            )
+        }
+
+        if (texting) {
+            MessageDialog(
+                onDismiss = { texting = false },
+                onSend = { message ->
+                    texting = false
+                    onSendText(message)
                 },
             )
         }
@@ -396,6 +410,28 @@ private fun ReceiveTab(state: HomeState, onActions: (ReceivedFile) -> Unit) {
             )
         }
 
+        // A copy is written to the public store as each file lands, so the
+        // answer to "where did it go?" is a folder the Files app already
+        // knows. Android 9 and older have no permission-free way to do that,
+        // and saying so is better than a path that does not exist. It is only
+        // worth saying once a file has actually landed.
+        if (state.received.isNotEmpty()) {
+            item(key = "where") {
+                Text(
+                    text = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        "Copies are in the Files app: Download/Flit for documents, " +
+                            "Pictures/Flit and Movies/Flit for photos and video."
+                    } else {
+                        "Files stay inside Flit on this version of Android. " +
+                            "Open one and share it to save it elsewhere."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.ink3,
+                    modifier = Modifier.padding(bottom = 10.dp),
+                )
+            }
+        }
+
         if (state.received.isEmpty()) {
             item(key = "empty-received") {
                 Column(
@@ -511,6 +547,7 @@ private fun SendTab(
     onCancelSend: () -> Unit,
     onDismissTransfer: () -> Unit,
     onAddress: () -> Unit,
+    onText: () -> Unit,
     onClearTarget: () -> Unit,
 ) {
     val colors = FlitPalette.colors
@@ -620,6 +657,7 @@ private fun SendTab(
                 typed = chosen == null,
                 enabled = state.device != null,
                 onPick = onPick,
+                onText = onText,
                 onClear = onClearTarget,
             )
         }
@@ -1104,6 +1142,7 @@ private fun SendSlab(
     typed: Boolean,
     enabled: Boolean,
     onPick: () -> Unit,
+    onText: () -> Unit,
     onClear: () -> Unit,
 ) {
     val colors = FlitPalette.colors
@@ -1116,41 +1155,65 @@ private fun SendSlab(
         color = slab,
         shape = RoundedCornerShape(24.dp),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 22.dp, end = 8.dp, top = 12.dp, bottom = 12.dp)
-                .heightIn(min = 64.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(start = 22.dp, end = 8.dp, top = 14.dp, bottom = 10.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (typed) "To address" else "Sending to",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.paper.copy(alpha = 0.55f),
-                )
-                Text(
-                    text = target,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = colors.paper,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Button(
-                onClick = onPick,
-                enabled = enabled,
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Choose files", style = MaterialTheme.typography.labelMedium)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (typed) "To address" else "Sending to",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.paper.copy(alpha = 0.55f),
+                    )
+                    Text(
+                        text = target,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = colors.paper,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconTap(label = "Choose another device", onClick = onClear) {
+                    CloseGlyph(tint = colors.paper.copy(alpha = 0.6f))
+                }
             }
-            IconTap(label = "Choose another device", onClick = onClear) {
-                CloseGlyph(tint = colors.paper.copy(alpha = 0.6f))
+
+            // Two kinds of payload, one destination. Text is the one that needs
+            // no file to exist first, so it sits beside the picker instead of
+            // behind a menu.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = onText,
+                    enabled = enabled,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = colors.paper,
+                        disabledContentColor = colors.paper.copy(alpha = 0.4f),
+                    ),
+                ) {
+                    Text("Message", style = MaterialTheme.typography.labelMedium)
+                }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = onPick,
+                    enabled = enabled,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                ) {
+                    Text("Files", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     }
@@ -1561,6 +1624,58 @@ private fun FileActionsDialog(
         },
         confirmButton = {},
         dismissButton = {},
+    )
+}
+
+/**
+ * A message, sent as a file.
+ *
+ * The engine has one payload path, so a note is saved on the other device as
+ * an ordinary text file. The dialog says that instead of pretending a chat
+ * exists on the other side.
+ */
+@Composable
+private fun MessageDialog(
+    onDismiss: () -> Unit,
+    onSend: (String) -> Unit,
+) {
+    var draft by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        containerColor = FlitPalette.colors.card,
+        title = { Text("Send a message") },
+        text = {
+            Column {
+                Text(
+                    text = "The other device saves it as message.txt. A link, an " +
+                        "address, a note — it arrives as text.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = FlitPalette.colors.ink2,
+                )
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    label = { Text("Message") },
+                    minLines = 4,
+                    maxLines = 8,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = draft.isNotBlank(),
+                onClick = { onSend(draft) },
+            ) {
+                Text("Send")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
     )
 }
 

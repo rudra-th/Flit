@@ -119,7 +119,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /** Runs out the undo window; cancelled by undo, commits the disk delete. */
     private var deleteJob: Job? = null
     private var starting = false
-    private lateinit var mediaImporter: MediaImporter
+    private lateinit var publicImporter: PublicImporter
 
     init {
         start()
@@ -382,6 +382,44 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Send one piece of text to the chosen destination.
+     *
+     * The receiver saves it as an ordinary file named `name`. Text travels in
+     * the manifest, so there is nothing to stream and the row settles as soon
+     * as the other device accepts.
+     */
+    fun sendText(text: String, name: String = "message.txt") {
+        val open = engine ?: return
+        val target = _state.value.selected
+        val manual = _state.value.manual
+        if (target == null && manual == null) {
+            _state.update { it.copy(notice = "Choose a device first.") }
+            return
+        }
+        if (text.isBlank()) {
+            _state.update { it.copy(notice = "There is nothing to send.") }
+            return
+        }
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    when {
+                        target != null -> open.sendText(target, text, name)
+                        manual != null ->
+                            open.sendTextTo(manual.addr, manual.fingerprint, text, name)
+                        else -> error("Choose a device first.")
+                    }
+                }
+            }
+
+            result.onFailure { err ->
+                _state.update { it.copy(notice = describe(err)) }
+            }
+        }
+    }
+
     /** Stop the send the row is showing. */
     fun cancelSend() {
         val open = engine ?: return
@@ -602,10 +640,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             val files = withContext(Dispatchers.IO) {
                 runCatching { open.received() }.getOrDefault(emptyList())
             }
-            if (!::mediaImporter.isInitialized) {
-                mediaImporter = MediaImporter(getApplication())
+            if (!::publicImporter.isInitialized) {
+                publicImporter = PublicImporter(getApplication())
             }
-            withContext(Dispatchers.IO) { mediaImporter.importAll(files) }
+            withContext(Dispatchers.IO) { publicImporter.importAll(files) }
             // A row the person removed stays removed even when the folder is
             // re-read before the delete commits: it is still on disk.
             _state.update { current ->

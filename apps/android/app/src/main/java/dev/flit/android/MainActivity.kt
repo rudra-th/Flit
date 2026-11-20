@@ -35,6 +35,7 @@ class MainActivity : ComponentActivity() {
                     onNoticeShown = home::clearNotice,
                     onChoose = home::choose,
                     onSend = home::send,
+                    onSendText = home::sendText,
                     onShare = home::shareToBrowser,
                     onStopShare = home::stopShare,
                     onCancelSend = home::cancelSend,

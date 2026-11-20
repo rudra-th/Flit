@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
+import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
 import dev.flit.android.ffi.ReceivedFile
 import java.io.File
@@ -80,33 +81,34 @@ internal fun deleteReceived(context: Context, name: String) {
 }
 
 /**
- * Images and videos a person expects to find in their gallery, not inside a
- * file manager. Each media file is imported once, remembered by name, size
- * and mtime, so a refresh never duplicates a row in the gallery.
+ * Copies a received file into the public store, where the rest of the phone
+ * can see it: pictures in Pictures/Flit, videos in Movies/Flit, everything else
+ * in Download/Flit. Each file is imported once, remembered by name, size and
+ * mtime, so a refresh never leaves a second copy.
  *
- * Own-app writes to MediaStore need no permission on API 29+, which is the
- * floor for this: on older builds the files stay in the received folder and
- * remain openable from the ledger.
+ * "Where did my file go?" is the first question a receive raises, and the
+ * answer should be a folder the Files app already lists rather than a private
+ * directory only Flit can open. Own-app writes to MediaStore need no
+ * permission on API 29+, which is the floor for this: on older builds the
+ * files stay in the received folder and remain openable from the ledger.
  */
-internal class MediaImporter(context: Context) {
+internal class PublicImporter(context: Context) {
     private val app = context.applicationContext
     private val prefs = app.getSharedPreferences("flit-media", Context.MODE_PRIVATE)
     private val imported = prefs.getStringSet("imported", emptySet())?.toMutableSet() ?: mutableSetOf()
 
-    /** Import every not-yet-imported media file in the list. */
+    /** Import every not-yet-imported file in the list. */
     fun importAll(files: List<ReceivedFile>) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         var changed = false
         for (file in files) {
             if (file.folder) continue
-            val mime = mimeFor(file.name)
-            if (!mime.startsWith("image/") && !mime.startsWith("video/")) continue
             val key = file.name + ":" + file.bytes + ":" + file.modified
             if (imported.contains(key)) continue
 
             val source = resolveReceived(app, file.name)
             if (!source.isFile) continue
-            if (insert(file, mime)) {
+            if (insert(file, source)) {
                 imported += key
                 changed = true
             }
@@ -116,33 +118,36 @@ internal class MediaImporter(context: Context) {
         }
     }
 
-    private fun insert(file: ReceivedFile, mime: String): Boolean = runCatching {
-        val source = resolveReceived(app, file.name)
-        val collection = if (mime.startsWith("video/")) {
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        } else {
-            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun insert(file: ReceivedFile, source: File): Boolean = runCatching {
+        val mime = mimeFor(file.name)
+        val collection = when {
+            mime.startsWith("video/") ->
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            mime.startsWith("image/") ->
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            else -> MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         }
-        val relative = if (mime.startsWith("video/")) "Movies/Flit" else "Pictures/Flit"
+        val relative = when {
+            mime.startsWith("video/") -> "Movies/Flit"
+            mime.startsWith("image/") -> "Pictures/Flit"
+            else -> "Download/Flit"
+        }
 
         val values = android.content.ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, source.name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, relative)
-                put(MediaStore.MediaColumns.IS_PENDING, 1)
-            }
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relative)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val resolver = app.contentResolver
         val uri = resolver.insert(collection, values) ?: return false
         resolver.openOutputStream(uri)?.use { out ->
             source.inputStream().use { it.copyTo(out) }
         } ?: return false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            values.clear()
-            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-        }
+        values.clear()
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
         true
     }.getOrDefault(false)
 }
