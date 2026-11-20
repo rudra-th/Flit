@@ -415,6 +415,11 @@ export function createDemo(): FlitBridge {
       return THIS_MACHINE;
     },
 
+    async openReceiveFolder() {
+      // A browser has no file manager. The demo says nothing rather than
+      // pretending a window opened.
+    },
+
     async rename(name: string) {
       const clean = name.trim().split(/\s+/).join(" ");
       if (clean.length === 0 || clean.length > 32) {

@@ -16,9 +16,13 @@ const LISTED = 4;
  */
 export function ConsentDialog({
   offer,
+  folder,
   onAnswer,
 }: {
   offer: Offer;
+  /** Where the files will land, so the question names the place as well as
+   * the sender. Null while the shell is still reporting its status. */
+  folder: string | null;
   onAnswer: (accept: boolean, remember: boolean) => void;
 }) {
   const [remember, setRemember] = useState(false);
@@ -66,7 +70,15 @@ export function ConsentDialog({
           {offer.sender} wants to send {files}
         </h2>
         <p className="consent-note" id="consent-note">
-          {bytes(offer.bytes)} &middot; Nothing is saved until you accept.
+          {bytes(offer.bytes)} &middot;{" "}
+          {folder === null ? (
+            "Nothing is saved until you accept."
+          ) : (
+            <>
+              Nothing is saved until you accept. These land in{" "}
+              <span className="consent-folder">{folder}</span>.
+            </>
+          )}
         </p>
 
         <ul className="consent-files">

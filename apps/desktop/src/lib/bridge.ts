@@ -24,6 +24,8 @@ export interface FlitBridge {
   /** True when this is the browser stand-in, never in a shipped build. */
   readonly demo: boolean;
   status(): Promise<Status>;
+  /** Show the receive folder in the system file manager. */
+  openReceiveFolder(): Promise<void>;
   /** Change the name other devices see. The shell restarts to announce it. */
   rename(name: string): Promise<string>;
   peers(): Promise<Peer[]>;
@@ -75,6 +77,7 @@ export function runningInShell(): boolean {
 const shell: FlitBridge = {
   demo: false,
   status: () => invoke<Status>("status"),
+  openReceiveFolder: () => invoke<void>("open_receive_folder"),
   rename: (name) => invoke<string>("rename", { name }),
   peers: () => invoke<Peer[]>("peers"),
   history: () => invoke<HistoryEntry[]>("history"),

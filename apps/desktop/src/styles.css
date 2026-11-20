@@ -1726,6 +1726,15 @@ button {
   color: var(--ink-3);
 }
 
+/* The destination is a path, so it is set like one: mono, quiet, wrapping at
+ * the separators rather than running under the dialog's edge. */
+.consent-folder {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
 .consent-files {
   margin: 16px 0 0;
   padding: 0;

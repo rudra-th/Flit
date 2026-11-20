@@ -82,6 +82,8 @@ export default function App() {
   manualRef.current = manual;
   const trayRef = useRef(tray);
   trayRef.current = tray;
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const bridgeRef = useRef<FlitBridge | null>(null);
   bridgeRef.current = bridge;
   const samples = useRef(new Map<number, Sample>());
@@ -718,15 +720,24 @@ export default function App() {
         const answered = await live.answerOffer(id, accept, remember);
         if (!answered) {
           say("That transfer already closed.", "bad");
-        } else if (accept && remember) {
-          // The shell wrote the key before answering, but the panel was read
-          // separately; refresh it so the new row is there when the question
-          // comes down, not a reload later.
-          void live
-            .trustedDevices()
-            .then((trusted) => setPolicy((current) => ({ ...current, trusted })))
-            .catch(() => undefined);
-          say("Accepted, and this device is trusted from now on.");
+        } else if (accept) {
+          // Accepting is the moment the file stops being a question and
+          // becomes a path on this disk, so it is the moment to say which one.
+          const root = statusRef.current?.root;
+          say(
+            remember
+              ? `Accepted, and this device is trusted. Files land in ${root ?? "the receive folder"}.`
+              : `Accepted. Files land in ${root ?? "the receive folder"}.`,
+          );
+          if (remember) {
+            // The shell wrote the key before answering, but the panel was read
+            // separately; refresh it so the new row is there when the question
+            // comes down, not a reload later.
+            void live
+              .trustedDevices()
+              .then((trusted) => setPolicy((current) => ({ ...current, trusted })))
+              .catch(() => undefined);
+          }
         }
       } catch (error) {
         say(describe(error), "bad");
@@ -862,6 +873,11 @@ export default function App() {
             onRename={rename}
             onAutoAccept={setAutoAccept}
             onForget={forgetTrusted}
+            onOpenFolder={() => {
+              void bridgeRef.current?.openReceiveFolder().catch((error) => {
+                say(describe(error), "bad");
+              });
+            }}
           />
         )}
       </main>
@@ -891,6 +907,7 @@ export default function App() {
         <ConsentDialog
           key={offer.id}
           offer={offer}
+          folder={status?.root ?? null}
           onAnswer={(accept, remember) => {
             void answerOffer(offer.id, accept, remember);
           }}

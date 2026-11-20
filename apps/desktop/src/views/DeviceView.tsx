@@ -13,12 +13,14 @@ function Field({
   text,
   mono,
   copy,
+  action,
 }: {
   label: string;
   value: string | null;
   text?: boolean;
   mono?: boolean;
   copy?: string;
+  action?: { label: string; onClick: () => void };
 }) {
   const className = ["field-value", text ? "text" : "", mono ? "mono" : ""]
     .filter(Boolean)
@@ -28,6 +30,11 @@ function Field({
     <div className="field">
       <span className="field-label">{label}</span>
       <span className={className}>{value ?? "—"}</span>
+      {action ? (
+        <button type="button" className="btn btn-quiet" onClick={action.onClick}>
+          {action.label}
+        </button>
+      ) : null}
       {copy ? <CopyButton text={copy} /> : null}
     </div>
   );
@@ -213,6 +220,7 @@ export function DeviceView({
   onRename,
   onAutoAccept,
   onForget,
+  onOpenFolder,
 }: {
   status: Status | null;
   policy: ReceivingPolicy;
@@ -220,6 +228,7 @@ export function DeviceView({
   onRename: (name: string) => Promise<void>;
   onAutoAccept: (enabled: boolean) => void;
   onForget: (fingerprint: string) => void;
+  onOpenFolder: () => void;
 }) {
   const discovery =
     status === null
@@ -266,6 +275,7 @@ export function DeviceView({
             value={status?.root ?? null}
             mono
             copy={status?.root}
+            action={{ label: "Open folder", onClick: onOpenFolder }}
           />
           <Field label="Discovery" value={discovery} />
           <Field

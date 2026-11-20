@@ -8,6 +8,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    process::Command,
     time::Duration,
 };
 
@@ -40,6 +41,39 @@ pub async fn status(shell: State<'_, Shell>) -> Result<Status, String> {
         version: info.version.clone(),
         discovery: Discovery::from(engine.discovery()),
     })
+}
+
+/// Show the receive folder in the system file manager.
+///
+/// "Where did my file go?" is the first question a received file raises, and
+/// answering it by naming a path in a toast only works if the person can get
+/// there. The path comes from the engine, never from the window, so this opens
+/// one fixed directory rather than an arbitrary one.
+#[tauri::command]
+pub fn open_receive_folder(shell: State<'_, Shell>) -> Result<(), String> {
+    let root = shell.inner.engine.root().to_path_buf();
+    // The engine creates the folder when the first file lands. Opening a path
+    // that does not exist yet is an error dialog on every platform, so make it.
+    std::fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+    launch(&root).map_err(|err| format!("could not open {}: {err}", root.display()))
+}
+
+/// Hand a directory to the desktop's own file manager.
+#[cfg(target_os = "windows")]
+fn launch(path: &Path) -> std::io::Result<()> {
+    // `explorer` returns a non-zero status even when it succeeds, so the child
+    // is left to run on its own and only a failure to start is reported.
+    Command::new("explorer").arg(path).spawn().map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn launch(path: &Path) -> std::io::Result<()> {
+    Command::new("open").arg(path).spawn().map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn launch(path: &Path) -> std::io::Result<()> {
+    Command::new("xdg-open").arg(path).spawn().map(|_| ())
 }
 
 /// Change the name other devices see.
