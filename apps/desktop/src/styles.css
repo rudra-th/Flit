@@ -9,13 +9,6 @@
  * line or one tone step, which survives both themes.
  */
 
-@import "@fontsource/poppins/latin-500.css";
-@import "@fontsource/poppins/latin-600.css";
-@import "@fontsource/open-sans/latin-400.css";
-@import "@fontsource/open-sans/latin-500.css";
-@import "@fontsource/open-sans/latin-600.css";
-@import "@fontsource/ibm-plex-mono/latin-400.css";
-
 :root {
   color-scheme: light;
 
@@ -46,9 +39,14 @@
   --r: 16px;
   --r-sm: 11px;
 
-  --sans: "Open Sans", "Segoe UI", system-ui, sans-serif;
-  --display: "Poppins", "Open Sans", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", monospace;
+  /* The system face, at every size. Flit is a small utility and should read
+   * like the rest of the desktop: hierarchy is weight and size, not a bundled
+   * display face that ages the moment it ships. */
+  --sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --display: system-ui, -apple-system, "Segoe UI Variable Display", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
 
   font-family: var(--sans);
   font-size: 14px;

@@ -8,19 +8,18 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import dev.flit.android.R
 
 /**
- * The display face: used for the wordmark, the section titles, the device
- * names, and the state words of a transfer. Everything factual — sizes,
- * fingerprints, paths — stays in the system sans. One face carries the
- * personality; the other carries the data.
+ * One face, the one the phone already draws: the system sans. Flit is a
+ * utility that looks like it belongs to the device, so the hierarchy comes
+ * from weight and size rather than a bundled display face. Everything —
+ * wordmark, section titles, device names, sizes, fingerprints — is the same
+ * family; only the weight changes.
  */
-private val Serif = FontFamily(Font(R.font.instrument_serif))
+private val Sans = FontFamily.SansSerif
 
 // Paper and ink. The accent is spent only on what can be acted on: the one
 // button, the selection check, the progress fill. Hierarchy is carried by
@@ -144,62 +143,65 @@ fun FlitTheme(content: @Composable () -> Unit) {
             colorScheme = scheme,
             typography = Typography(
                 displaySmall = TextStyle(
-                    fontFamily = Serif,
+                    fontFamily = Sans,
+                    fontWeight = FontWeight.SemiBold,
                     fontSize = 32.sp,
                     lineHeight = 38.sp,
-                    letterSpacing = (-0.3).sp,
+                    letterSpacing = (-0.6).sp,
                 ),
                 // Section titles and the state words of a transfer.
                 headlineSmall = TextStyle(
-                    fontFamily = Serif,
+                    fontFamily = Sans,
+                    fontWeight = FontWeight.SemiBold,
                     fontSize = 24.sp,
                     lineHeight = 30.sp,
-                    letterSpacing = (-0.2).sp,
+                    letterSpacing = (-0.4).sp,
                 ),
                 // Device names, and the name in the identity sheet.
                 titleLarge = TextStyle(
-                    fontFamily = Serif,
-                    fontSize = 21.sp,
+                    fontFamily = Sans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 20.sp,
                     lineHeight = 26.sp,
-                    letterSpacing = (-0.1).sp,
+                    letterSpacing = (-0.2).sp,
                 ),
                 // Factual headlines: sans, small, medium weight.
                 titleMedium = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp,
                     lineHeight = 21.sp,
                     letterSpacing = (-0.1).sp,
                 ),
                 titleSmall = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontWeight = FontWeight.Medium,
                     fontSize = 15.sp,
                     lineHeight = 20.sp,
                 ),
                 bodyLarge = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontSize = 16.sp,
                     lineHeight = 24.sp,
                 ),
                 bodyMedium = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontSize = 14.sp,
                     lineHeight = 21.sp,
                 ),
                 bodySmall = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontSize = 12.5.sp,
                     lineHeight = 18.sp,
                 ),
                 labelMedium = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontWeight = FontWeight.Medium,
                     fontSize = 13.5.sp,
                     lineHeight = 18.sp,
                 ),
                 labelSmall = TextStyle(
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = Sans,
                     fontWeight = FontWeight.Medium,
                     fontSize = 12.sp,
                     lineHeight = 16.sp,
